@@ -1,6 +1,10 @@
-.env        
+.env
 .venv/
 __pycache__/
 *.py[cod]
 
-tests
+tests/
+
+# 斗地主架构图的重复输出与编译中间文件
+/1：斗地主/output/
+/1：斗地主/tmp/
