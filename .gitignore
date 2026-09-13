@@ -1,10 +1,21 @@
 .env
+.env.*
 .venv/
 __pycache__/
 *.py[cod]
 
 tests/
+.pytest_cache/
 
 # 斗地主架构图的重复输出与编译中间文件
 /1：斗地主/output/
 /1：斗地主/tmp/
+/1：斗地主/*.aux
+/1：斗地主/*.log
+/1：斗地主/*.out
+/1：斗地主/*.xdv
+/1：斗地主/*.synctex.gz
+
+# API 请求记录只保留在本地
+/1：斗地主/records/
+record-*.jsonl

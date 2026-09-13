@@ -1,7 +1,6 @@
 """观战输出：render 只返回文字，由主程序打印。"""
 
 from collections import Counter
-from collections.abc import Callable
 
 from common import Hand, PLAYERS, RANKS
 
@@ -53,7 +52,3 @@ def render(view: dict) -> str:
     if view.get("winner"):
         lines.append(f"本局结束：{view['winner']}获胜。")
     return "\n".join(lines)
-
-
-def pause(read: Callable[[str], str] = input) -> None:
-    read("按回车继续……")

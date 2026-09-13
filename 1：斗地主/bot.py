@@ -13,7 +13,8 @@ from common import Action, Cards, DECK, PLAYERS, RANK_INDEX, Reply, RuleError
 SYSTEM_PROMPT = """你是三人斗地主的一位玩家，座位顺序固定为 Alice、Bob、Corleone。
 你只知道自己的初始17张牌与完整公开牌桌。根据公开底牌和已接受的出牌推导剩余手牌；
 被拒动作不扣牌。地主自己先出完获胜；任一农民先出完，两位农民共同获胜。
-叫地主阶段身份待定，按座位各叫一次0/1/2，最高非零分获地主，同分先叫者优先；
+叫地主阶段身份待定，三人按座位依次各叫一次0/1/2，即使前面有人叫2也必须三人都调用。
+最高非零分获地主，同分先叫者优先；
 全0重新发牌。地主公开领取3张底牌并首先领出。
 牌面：3 < 4 < 5 < 6 < 7 < 8 < 9 < 10 < J < Q < K < A < 2 < X < Y。
 普通牌各4张，X小王和Y大王各1张。牌面用空格或 | 分隔，一个10是一张牌。
@@ -30,7 +31,7 @@ SYSTEM_PROMPT = """你是三人斗地主的一位玩家，座位顺序固定为 
 领出时不能pass；跟牌时可以pass。一次pass保留目标，两次连续pass后原出牌者重新领出。
 只提出动作，不自行扣牌或宣布动作生效；以牌桌的接受/拒绝事件和错误反馈为准。
 可以先给出可见说明，最后一个非空行必须是唯一的协议行，不使用代码围栏：
-叫地主：Bid: 0 或 Bid: 1 或 Bid: 2
+叫地主：bid(0) 或 bid(1) 或 bid(2)
 出牌：Action: play(3 3 3 | 4) 或 Action: pass()
 根据当前阶段只使用对应协议，协议行之后不要追加文字。
 """
@@ -38,16 +39,16 @@ SYSTEM_PROMPT = """你是三人斗地主的一位玩家，座位顺序固定为 
 
 def _protocol_line(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    protocols = [line for line in lines if re.match(r"(?:Bid|Action)\s*:", line)]
+    protocols = [line for line in lines if re.match(r"(?:bid\s*\(|(?:Bid|Action)\s*:)", line)]
     if not lines or "```" in text or "~~~" in text or protocols != [lines[-1]]:
-        raise RuleError("FORMAT", "请在最后单独输出唯一的 Bid: 或 Action: 协议行，不加代码围栏。")
+        raise RuleError("FORMAT", "请在最后单独输出唯一的 bid(分数) 或 Action: 协议行，不加代码围栏。")
     return lines[-1]
 
 
 def parse_bid(text: str) -> int:
-    match = re.fullmatch(r"Bid\s*:\s*([012])", _protocol_line(text))
+    match = re.fullmatch(r"bid\s*\(\s*([012])\s*\)", _protocol_line(text))
     if not match:
-        raise RuleError("FORMAT", "叫分末行必须为 Bid: 0、Bid: 1 或 Bid: 2。")
+        raise RuleError("FORMAT", "叫分末行必须为 bid(0)、bid(1) 或 bid(2)。")
     return int(match[1])
 
 
@@ -69,14 +70,16 @@ class Agent:
 
     max_tokens 可选，未提供时不发送该参数。send(messages) 可替代 HTTP 请求，
     返回 Chat Completions 原始响应字典，用于离线验证。不会自动加载 .env 或更换模型。
+    on_request(endpoint, body, attempt) 在每次 HTTP 请求前接收实际请求体，不接收密钥。
     """
 
-    def __init__(self, name: str, config: dict, send: Callable | None = None):
+    def __init__(self, name: str, config: dict, send: Callable | None = None, *, on_request=None):
         self.name = name
         self.config = {"timeout": 120, "retries": 2, "backoff": 1, **config}
         if not isinstance(self.config["retries"], int) or self.config["retries"] < 0:
             raise ValueError("retries 必须是非负整数。")
         self.send = send if send is not None else self._request
+        self.on_request = on_request
         self.initial_cards: Cards | None = None
 
     def start_deal(self, cards: Cards) -> None:
@@ -128,6 +131,8 @@ class Agent:
         connection_type = HTTPSConnection if url.scheme == "https" else HTTPConnection
 
         for attempt in range(config["retries"] + 1):
+            if self.on_request is not None:
+                self.on_request(endpoint, body, attempt + 1)
             connection = connection_type(url.hostname, url.port, timeout=config["timeout"])
             try:
                 connection.request("POST", url.path, body, headers)
