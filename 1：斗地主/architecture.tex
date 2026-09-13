@@ -1,0 +1,177 @@
+% Compile twice with XeLaTeX to resolve page-relative diagram positions:
+% xelatex -interaction=nonstopmode -halt-on-error architecture.tex
+% One A4 landscape page. All boxes, text and arrows are vector elements.
+\documentclass[10pt]{article}
+\usepackage[a4paper,landscape,margin=10mm]{geometry}
+\usepackage{lmodern}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc}
+\IfFontExistsTF{Microsoft YaHei}{
+  \setCJKmainfont{Microsoft YaHei}
+  \setCJKsansfont{Microsoft YaHei}
+  \setCJKmonofont{Microsoft YaHei}
+}{
+  \setCJKmainfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKsansfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKmonofont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+}
+\setmainfont{TeX Gyre Heros}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\definecolor{ink}{HTML}{172C3B}
+\definecolor{muted}{HTML}{526574}
+\definecolor{line}{HTML}{CBD6DC}
+\definecolor{botcolor}{HTML}{176C99}
+\definecolor{judgecolor}{HTML}{157967}
+\definecolor{displaycolor}{HTML}{935A26}
+\definecolor{botbg}{HTML}{F0F7FC}
+\definecolor{judgebg}{HTML}{F0F8F5}
+\definecolor{displaybg}{HTML}{FCF6EF}
+\definecolor{mainbg}{HTML}{F5F7FA}
+\newcommand{\code}[1]{{\ttfamily\detokenize{#1}}}
+\newcommand{\api}[1]{\code{#1}\par}
+\newcommand{\hint}[1]{{\color{muted}#1}}
+\newcommand{\tagline}[1]{{\bfseries #1}\par}
+\begin{document}
+\sffamily\color{ink}
+\null
+\begin{tikzpicture}[
+  remember picture,overlay,shift={(current page.north west)},x=1mm,y=-1mm,
+  every node/.style={inner sep=0pt,outer sep=0pt},
+  copy/.style={anchor=north west,align=left,font=\fontsize{9}{12}\selectfont},
+  arrow/.style={-{Stealth[length=1.7mm,width=1.2mm]},line width=.65pt},
+  flowbox/.style={draw=line,fill=white,rounded corners=1.3mm,minimum height=7mm,
+               align=center,font=\fontsize{9}{11}\selectfont}
+]
+% Heading.
+\node[anchor=north west,font=\fontsize{20}{24}\selectfont\bfseries] at (10,9)
+  {斗地主\quad 三模块架构};
+\node[copy,text=muted] at (10,20)
+  {三个独立模块，main 组合调用；箭头表示输入与返回，唯一的牌局状态由 main 持有。};
+\node[anchor=north east,text=muted,font=\fontsize{9}{11}\selectfont] at (287,11)
+  {DESIGN PROPOSAL\quad /\quad 01};
+\node[anchor=north east,text=muted,font=\fontsize{9}{11}\selectfont] at (287,20)
+  {A4 横向\quad ·\quad 1 / 1};
+\draw[line] (10,27) -- (287,27);
+
+% Three independent objects; no edges between them.
+\draw[draw=botcolor!35,fill=botbg,rounded corners=2.5mm] (10,32) rectangle (99,101);
+\draw[draw=judgecolor!35,fill=judgebg,rounded corners=2.5mm] (104,32) rectangle (193,101);
+\draw[draw=displaycolor!35,fill=displaybg,rounded corners=2.5mm] (198,32) rectangle (287,101);
+\foreach \x/\n/\c in {17/1/botcolor,111/2/judgecolor,205/3/displaycolor}{
+  \fill[\c] (\x,39) circle (3.1mm);
+  \node[text=white,font=\bfseries\fontsize{10}{11}\selectfont] at (\x,39) {\n};
+}
+\node[copy,font=\bfseries\fontsize{13}{16}\selectfont,text=botcolor] at (23,35.5)
+  {\code{bot.py} / Agent};
+\node[copy,font=\bfseries\fontsize{13}{16}\selectfont,text=judgecolor] at (117,35.5)
+  {\code{judge.py} / 纯函数};
+\node[copy,font=\bfseries\fontsize{13}{16}\selectfont,text=displaycolor] at (211,35.5)
+  {\code{display.py} / 函数};
+\node[copy,text=botcolor] at (16,45) {职责：构造自己的上下文，取得并解析决策};
+\node[copy,text=judgecolor] at (110,45) {职责：判定动作合法性，返回结果或错误};
+\node[copy,text=displaycolor] at (204,45) {职责：生成观战文字，等待用户继续};
+
+\node[copy,text width=78mm] at (16,53) {
+  \api{Agent(name, config, send=None)}
+  \api{.start_deal(cards) -> None}
+  \api{.reply(table) -> Reply}
+  \api{parse_bid(text) -> int}
+  \api{parse_action(text) -> Action}
+  \vspace{1.3mm}
+  \hint{内部：\code{_messages}, \code{_request}}\par
+  \hint{仅保存本人身份、配置与初始 17 张牌。}\par
+  \hint{模型名与生成上限来自配置。}
+};
+\node[copy,text width=77mm] at (110,53) {
+  \api{judge(action, hand, target=None)}
+  \api{    -> Combo | None}
+  \hint{通过：返回牌型；合法 pass：返回 None；}\par
+  \hint{拒绝：抛出 \code{RuleError(code, message)}。}\par
+  \vspace{1.3mm}
+  \hint{内部：\code{_classify(cards)}}\par
+  \hint{\code{_beats(current, target)}}\par
+  \hint{\code{_consecutive(ranks)}}\par
+  \hint{持牌 → 牌型 → 压制；领出禁 pass。}
+};
+\node[copy,text width=77mm] at (204,53) {
+  \api{render(view) -> str}
+  \api{pause(read=input) -> None}
+  \vspace{1.3mm}
+  \hint{内部：\code{_cards(hand) -> str}}\par
+  \hint{view 包含全手牌、身份、轮次、目标、}\par
+  \hint{当前事件与可见回复；main 打印返回值。}\par
+  \vspace{1.3mm}
+  \hint{表格、提交、判罚与终局使用同一入口。}\par
+  \hint{牌面排序与分组仅负责呈现。}
+};
+\draw[botcolor!20] (16,91) -- (93,91);
+\draw[judgecolor!20] (110,91) -- (187,91);
+\draw[displaycolor!20] (204,91) -- (281,91);
+\node[copy,font=\fontsize{8.5}{10}\selectfont,text=botcolor] at (16,94)
+  {独立测试：注入假 send，检查输入和协议解析};
+\node[copy,font=\fontsize{8.5}{10}\selectfont,text=judgecolor] at (110,94)
+  {独立测试：给手牌与目标，断言结果或异常};
+\node[copy,font=\fontsize{8.5}{10}\selectfont,text=displaycolor] at (204,94)
+  {独立测试：固定 view，检查文字；替换 read};
+
+% Ports between main and each module. Up = arguments; down = result.
+\draw[arrow,botcolor] (21,117) -- (21,101);
+\draw[arrow,botcolor] (88,101) -- (88,117);
+\node[anchor=center,align=center,text=botcolor,font=\fontsize{8.5}{10.5}\selectfont] at (54.5,108.8)
+  {\code{cards / public table} $\uparrow$\\$\downarrow$ \code{Reply / int / Action}};
+\draw[arrow,judgecolor] (115,117) -- (115,101);
+\draw[arrow,judgecolor] (182,101) -- (182,117);
+\node[anchor=center,align=center,text=judgecolor,font=\fontsize{8.5}{10.5}\selectfont] at (148.5,108.8)
+  {\code{action / hand / target} $\uparrow$\\$\downarrow$ \code{Combo / None / RuleError}};
+\draw[arrow,displaycolor] (209,117) -- (209,101);
+\draw[arrow,displaycolor] (276,101) -- (276,117);
+\node[anchor=center,align=center,text=displaycolor,font=\fontsize{8.5}{10.5}\selectfont] at (242.5,108.8)
+  {\code{spectator view} $\uparrow$\\$\downarrow$ 观战文字 / 回车返回};
+
+% main is the only stateful orchestrator.
+\draw[draw=ink!35,fill=mainbg,rounded corners=2.5mm] (10,117) rectangle (287,170);
+\node[copy,font=\bfseries\fontsize{12}{15}\selectfont] at (15,121)
+  {\code{main.py} / 唯一的流程与状态管理者};
+\node[anchor=north east,font=\fontsize{8.5}{11}\selectfont,text=muted] at (282,122)
+  {\code{State}（数据类）: hands, bottom, bids, landlord, actor, target, owner, passes, turn, history};
+\node[copy,font=\fontsize{8.8}{11}\selectfont] at (15,129)
+  {\textbf{启动}\quad \code{main()} 读取 .env、创建 3 个 Agent → \code{deal()} 发牌 → \code{bid()} 依次叫分 → 地主领出};
+\node[anchor=north east,font=\fontsize{8.3}{10}\selectfont,text=muted] at (282,129)
+  {全 0 重发；最高分同分取先叫者};
+
+\node[flowbox,minimum width=31mm] (s1) at (32,144) {展示本回合};
+\node[flowbox,minimum width=34mm] (s2) at (79,144) {Agent 回复 + 解析};
+\node[flowbox,minimum width=31mm] (s3) at (127,144) {judge 校验};
+\node[flowbox,minimum width=35mm] (s4) at (176,144) {apply 扣牌 / 更新};
+\node[flowbox,minimum width=73mm] (s5) at (246,144) {判胜 + 展示 → 回车 → 结束 / 下一人};
+\draw[arrow,ink] (s1.east) -- (s2.west);
+\draw[arrow,ink] (s2.east) -- (s3.west);
+\draw[arrow,ink] (s3.east) -- node[above=1mm,font=\fontsize{7.5}{9}\selectfont] {合法} (s4.west);
+\draw[arrow,ink] (s4.east) -- (s5.west);
+\draw[arrow,judgecolor] (s3.south) -- (127,154) -- (79,154) -- (s2.south);
+\node[anchor=north,font=\fontsize{8.2}{10}\selectfont,text=judgecolor] at (103,155.5)
+  {格式 / 规则错误：记反馈，同一玩家重试};
+\node[copy,font=\fontsize{8.2}{10}\selectfont,text=muted] at (163,153)
+  {两次 pass 清空目标，原出牌者重新领出。};
+\node[copy,font=\fontsize{8.2}{10}\selectfont,text=muted] at (163,157)
+  {网络 / 截断：有限重试，失败中止且不判输。};
+\node[copy,font=\fontsize{8.5}{10.5}\selectfont] at (15,164)
+  {内部函数：\code{deal(), bid(), turn(), apply(), public_table(), spectator_view()}\quad ·\quad \code{turn()} 执行上方回合链};
+
+% Compact contracts and information boundary.
+\node[copy,font=\bfseries\fontsize{10}{12}\selectfont] at (10,175)
+  {共享契约 / \code{common.py}};
+\node[copy,font=\fontsize{8.6}{11}\selectfont] at (10,181)
+  {\code{Cards = tuple[str, ...]}\quad \code{Hand = Counter[str]}\quad \code{Action(kind, cards)}\quad \code{Combo(kind, high, cards)}\quad \code{RuleError(code, message)}};
+\node[copy,font=\fontsize{8.6}{11}\selectfont] at (10,186)
+  {Action / Combo 为数据类；cards 保存全部出牌。\quad \code{Reply = {text, finish_reason, usage}}，配置与 view 使用字典。};
+\draw[line] (10,192) -- (287,192);
+\node[copy,font=\fontsize{8.5}{10.5}\selectfont,text=muted,text width=277mm] at (10,195)
+  {\textbf{边界}\quad 三模块只依赖 common；common 只放类型与牌面常量。Bot 只见本人初始牌 + 完整公开历史；全手牌与可见说明仅供观战。规则沿用 README；当前交付为结构方案。};
+\end{tikzpicture}
+\end{document}

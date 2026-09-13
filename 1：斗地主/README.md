@@ -243,79 +243,40 @@ API Key 从环境变量或本地配置读取，不硬编码进源码，也不输
 - 每个合法动作后都等待回车，暂停前不调用下一玩家；地主或任一农民出完后能立即正确判胜，完整展示终局。
 - 在接口配置有效、服务可用且模型能完成合法决策的情况下，主程序能够从初始化连续运行到一局结束，无须人类代替模型选择叫分或出牌。
 
-### 实现与运行
+### 当前实现
 
-#### 文件与环境
+上面的项目描述记录完整目标；当前提交只实现三个模块和共享类型，尚未实现 `main.py`，暂不能启动完整牌局。结构见 [architecture.pdf](architecture.pdf)，可编辑源码为 [architecture.tex](architecture.tex)。
 
-- `display.py`：牌面分组排序、全知观战展示、裁判结果、回车暂停和终局展示。
-- `judge.py`：牌库定义、牌型识别、大小比较、持牌与行动资格检查；判定过程不修改状态。
-- `bot.py`：使用 `find_dotenv()` 和 `load_dotenv()` 加载配置，管理独立 Agent 输入、动作解析、HTTP 请求与接口重试。
-- `main.py`：管理真实牌局状态、发牌与叫地主、公开历史、合法动作提交、异常纠正和胜负判定。
-- `tests/`：牌型、状态流转、信息隔离、完整模拟对局及 HTTP 适配的离线验收测试。
-
-要求 Python 3.11 或更高版本。第三方依赖只有 `python-dotenv`；HTTP 请求和测试使用 Python 标准库。虚拟环境统一放在 `my_project/.venv`，不会安装到全局 Python 中。
-
-以下 PowerShell 命令均在 `my_project` 目录执行。当前工作区已建立虚拟环境并安装依赖；首次在其他机器运行时执行：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r "1：斗地主\requirements.txt"
-```
-
-如果 Windows 的 `python` 命令未指向已安装的解释器，可用 `py -3.11 -m venv .venv` 创建环境。后续直接使用虚拟环境中的解释器，无须激活脚本或调整 PowerShell 执行策略。
-
-#### 配置 API
-
-程序默认从脚本所在位置向上查找 `.env`，因此可以直接使用已有的 `my_project/.env`。加载时不会修改文件，也不会覆盖同名的系统环境变量。
-
-现有的三个公共配置项可以直接使用：
-
-| 变量 | 用途与默认值 |
+| 文件 | 当前接口与职责 |
 | --- | --- |
-| `OPENAI_API_KEY` | API 密钥，必须提供；也可以分别提供三个玩家的密钥 |
-| `OPENAI_BASE_URL` | Chat Completions 接口基础地址，默认 `https://api.deepseek.com` |
-| `OPENAI_MODEL` | 模型标识，未配置时为 `deepseek-v4.1-flash`；已有配置会原样使用 |
-| `DDZ_API_TIMEOUT` | 单次 HTTP 请求超时秒数，默认 `120` |
-| `DDZ_API_RETRIES` | 暂时性接口故障的额外重试次数，默认 `2`，即总共最多请求三次 |
-| `DDZ_API_BACKOFF` | 指数退避的基础秒数，默认 `1`，单次等待最多 `30` 秒 |
-| `DDZ_MAX_TOKENS` | 每次模型生成的 token 上限，默认 `8192`，须在所用服务支持的范围内 |
+| `bot.py` | `Agent(name, config, send=None)`、`start_deal(cards)`、`reply(table)`；`parse_bid(text)`、`parse_action(text)` |
+| `judge.py` | `judge(action, hand, target=None)`；通过返回 `Combo`，合法 pass 返回 `None`，拒绝抛 `RuleError`；不修改手牌 |
+| `display.py` | `render(view)` 返回观战文字，`pause()` 等待回车；由调用方打印文字 |
+| `common.py` | `Action`、`Combo`、`RuleError`、牌面常量与类型别名 |
+| `local.env` | 不含密钥的配置模板 |
 
-每个玩家可用 `ALICE_API_KEY`、`ALICE_BASE_URL`、`ALICE_MODEL` 覆盖公共配置；Bob 和 Corleone 对应使用 `BOB_`、`CORLEONE_` 前缀。优先级为：玩家专属项高于公共项；同名项中系统环境变量高于 `.env`；都未配置时使用程序默认值。
+三个模块互不调用，只共享 `common.py`。牌局状态、配置加载、公开信息筛选与动作重试留给后续主程序。
 
-参考本目录的 `.env.example` 添加所需配置。已有 `.env` 不需要用示例文件覆盖。示例中的模型名是项目默认标识，接口是否接受它由所接服务决定；程序不会自动更换模型。
+#### 环境与配置
 
-API 适配采用非流式 `POST /chat/completions`，以 Bearer 密钥认证，从 `choices[0].message.content` 读取可见回复。基础地址可以包含 `/v1` 等服务路径，也可以直接填写以 `/chat/completions` 结尾的完整接口地址。协议依据 [DeepSeek Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion/)；环境文件加载行为参见 [python-dotenv 文档](https://bbc2.github.io/python-dotenv/)。
+使用 Python 3.11 或更高版本。在已激活的虚拟环境中运行 `python -m pip install -r requirements.txt`。三个模块目前仅用标准库；`python-dotenv` 供调用方读取环境文件。
 
-#### 启动与观战
+没有 `.env` 时可复制 `local.env` 并填写实际配置；已有 `.env` 请继续保留。`Agent` 当前不会自动加载环境变量，需要调用方读取并转换为以下 `config` 字典：
 
-仅检查配置，显示各玩家将使用的模型，不访问 API、不显示密钥：
+| 模板变量 | config 键 | 约定 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `api_key` | 实际请求时必填 |
+| `OPENAI_BASE_URL` | `base_url` | 实际请求时必填，可包含 `/v1` 或完整 `/chat/completions` 路径 |
+| `OPENAI_MODEL` | `model` | 填写所用服务确实支持的名称，无默认模型 |
+| `DDZ_API_TIMEOUT` | `timeout` | 转为秒数，默认 120 |
+| `DDZ_API_RETRIES` | `retries` | 转为非负整数，默认额外重试 2 次 |
+| `DDZ_API_BACKOFF` | `backoff` | 转为秒数，默认 1 |
+| `DDZ_MAX_TOKENS` | `max_tokens` | 非空时转为正整数；空时省略此键，不发送该参数 |
 
-```powershell
-.\.venv\Scripts\python.exe "1：斗地主\main.py" --check-config
-```
+每个 Agent 可传入不同的配置字典。`reply(table)` 返回 `text`、`finish_reason`、`usage`；调用方应先检查生成状态，再解析动作。`table` 必须是可 JSON 序列化的公开信息，不能包含其他玩家的私有手牌或可见说明。
 
-启动一局真实模型对战：
+#### 验证与提交范围
 
-```powershell
-.\.venv\Scripts\python.exe "1：斗地主\main.py"
-```
+本次实现已通过 106 项离线检查和 18 项本地模拟 HTTP 检查，未调用真实 API。`send(messages)` 可注入模拟响应，裁判可直接传入手牌和目标，展示可使用固定快照验证。
 
-叫地主自动依次进行；每次合法出牌或不出之后，按回车继续。非法动作由同一玩家自动纠正，期间无须按回车；按 `Ctrl+C` 可以中止。
-
-可选参数：
-
-- `--seed 42`：固定洗牌种子，方便复现发牌顺序；不会使远端模型的回复也变为确定性输出。
-- `--env-file "路径\.env"`：明确指定环境文件，路径相对于当前工作目录。
-- `--help`：查看命令说明。
-
-退出码 `0` 表示配置检查成功或正常结束，`1` 表示配置、接口或程序错误，`130` 表示在牌局完成前中止或输入流关闭。接口失败不会被判为玩家输牌。完整历史达到服务上下文限制时会明确中止，不静默截断历史。
-
-#### 离线验收
-
-以下测试只使用固定牌局、模拟模型响应和本机临时 HTTP 服务，不使用真实 API 密钥，也不调用远端模型：
-
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m unittest discover -s "1：斗地主\tests" -t "1：斗地主" -v
-```
-
-测试中的回车输入由可控回调提供；正常主程序始终保留逐回合暂停。完整模拟对局还会从实际发送给各 Agent 的两部分输入重建其手牌，以检查历史可用性、被拒动作不扣牌和私有信息隔离。
+本目录提交九个文件：README、依赖清单、四个 Python 文件、TeX/PDF 架构图、`local.env` 模板。本地 `.env`、虚拟环境、缓存、旧 tests 和中间输出不上传。
