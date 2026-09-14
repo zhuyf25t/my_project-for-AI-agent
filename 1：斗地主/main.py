@@ -6,7 +6,7 @@ import math
 import os
 import random
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -14,11 +14,12 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from bot import Agent, parse_action, parse_bid
-from common import Action, Cards, Combo, DECK, Hand, PLAYERS, Reply, RuleError
+from common import Action, Cards, Combo, DECK, Hand, PLAYERS, RANKS, Reply, RuleError
 from display import render
 from judge import judge
 
 BASE = Path(__file__).resolve().parent
+PLAYER_IDS = dict(zip(PLAYERS, "ABC"))
 
 
 @dataclass
@@ -33,7 +34,7 @@ class State:
     owner: str | None = None
     passes: int = 0
     turn: int = 1
-    history: list[dict] = field(default_factory=list)
+    history: list[str] = field(default_factory=list)  # 仅存有效动作，如“A 打出：3 3”“B 不出”。
 
 
 def load_configs(env_file: str | None = None) -> dict[str, dict]:
@@ -44,7 +45,12 @@ def load_configs(env_file: str | None = None) -> dict[str, dict]:
         "timeout": float(os.getenv("API_TIMEOUT") or 120),
         "retries": int(os.getenv("API_RETRIES") or 2),
         "backoff": float(os.getenv("API_BACKOFF") or 1),
+        "thinking": (os.getenv("thinking") or "disabled").strip().lower(),
+        "reasoning_effort": (os.getenv("reasoning_effort") or "low").strip().lower(),
+        "stream": False,
     }
+    if (os.getenv("stream") or "false").strip().lower() != "false":
+        raise ValueError("当前程序仅支持 stream=false（非流式响应）。")
     if not math.isfinite(options["timeout"]) or options["timeout"] <= 0:
         raise ValueError("API_TIMEOUT 必须是正数。")
     if options["retries"] < 0 or not math.isfinite(options["backoff"]) or options["backoff"] < 0:
@@ -75,25 +81,50 @@ def record_request(path: Path, context: dict, endpoint: str, body: bytes, attemp
         output.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def deal(agents: dict[str, Agent], rng: random.Random, number: int) -> State:
+def deal(rng: random.Random, number: int) -> State:
     cards = list(DECK)
     rng.shuffle(cards)
     hands = {name: tuple(cards[i * 17:(i + 1) * 17]) for i, name in enumerate(PLAYERS)}
-    for name, agent in agents.items():
-        agent.start_deal(hands[name])
     return State({name: Counter(hand) for name, hand in hands.items()}, tuple(cards[51:]), number)
 
 
-def public_table(state: State) -> dict:
-    """显式构造公开信息，避免把观众快照或完整手牌交给模型。"""
-    return {
-        "deal": state.deal, "phase": "play" if state.landlord else "bid",
-        "actor": state.actor, "turn": state.turn, "bids": dict(state.bids),
-        "landlord": state.landlord, "bottom": state.bottom if state.landlord else (),
-        "remaining": {name: sum(hand.values()) for name, hand in state.hands.items()},
-        "target": asdict(state.target) if state.target else None,
-        "owner": state.owner, "passes": state.passes, "history": list(state.history),
-    }
+def format_user(state: State, player: str, correction: str = "") -> str:
+    """稳定公开信息和完整历史在前，本人手牌、权威局面与本次要求在后。"""
+    bidding = state.landlord is None
+    lines = ["【本局公开信息】"]
+    if not bidding:
+        lines.append("底牌：" + " ".join(state.bottom))
+    lines.append("叫分结果：" + "，".join(
+        f"{PLAYER_IDS[name]}={state.bids.get(name, '尚未叫分')}" for name in PLAYERS))
+    if not bidding:
+        lines += [f"地主：{PLAYER_IDS[state.landlord]}", "", "【完整出牌记录】",
+                  *(state.history or ["尚无出牌记录"])]
+
+    role = "待定" if bidding else "地主" if player == state.landlord else "农民"
+    hand = " | ".join(" ".join([rank] * state.hands[player][rank])
+                      for rank in RANKS if state.hands[player][rank] > 0)
+    lines += ["", "【当前局面】", f"阶段：{'叫分' if bidding else '出牌'}",
+              f"现在轮到你：{PLAYER_IDS[player]}，身份：{role}", f"你的当前手牌：{hand}"]
+    if not bidding:
+        lines.append("各家剩余张数：" + "，".join(
+            f"{PLAYER_IDS[name]}={sum(state.hands[name].values())}" for name in PLAYERS))
+        if state.target is not None:
+            target = state.target
+            lines += ["本轮方式：跟牌",
+                      f"当前需要压制的牌：{PLAYER_IDS[state.owner]} 的{target.kind} "
+                      f"{' '.join(target.cards)}，共 {len(target.cards)} 张",
+                      f"当前状态说明：已有 {state.passes} 人连续不出，目标仍然有效；可以合法压制，也可以 pass()。"]
+        else:
+            reason = "地主首次出牌" if state.turn == 1 else "你此前出牌后，其余两人连续不出，目标已清空"
+            lines += ["本轮方式：自由出牌", "当前需要压制的牌：无",
+                      f"当前状态说明：{reason}；必须 play(...)，不能 pass()。"]
+    if correction:
+        lines += ["", "【本次纠正】", correction]
+    instruction = ("请选择叫分，最后一行只写 bid(0)、bid(1) 或 bid(2) 中的一项。" if bidding else
+                   "提交前核对持牌数量、牌型和压制关系，无需输出检查过程。\n"
+                   "最后一行只写 play(...) 或 pass()。")
+    lines += ["", instruction]
+    return "\n".join(lines)
 
 
 def spectator_view(state: State, **event) -> dict:
@@ -114,6 +145,7 @@ def _decide(state: State, agent: Agent, records: Path) -> tuple[int | Action, Co
     round_no = (state.turn - 1) // 3 + 1
     filename = f"record-bid-{slot}.jsonl" if bidding else f"record-{round_no}-{slot}.jsonl"
     attempt, truncated = 0, 0
+    correction = ""
     while True:
         attempt += 1
         context = {"deal": state.deal, "phase": "bid" if bidding else "play",
@@ -121,12 +153,13 @@ def _decide(state: State, agent: Agent, records: Path) -> tuple[int | Action, Co
                    "player": state.actor, "decision_attempt": attempt}
         agent.on_request = partial(record_request, records / filename, context)
         print(render(spectator_view(state, attempt=attempt)))
-        reply = agent.reply(public_table(state))
+        reply = agent.reply(format_user(state, state.actor, correction))
         reason = reply["finish_reason"]
         choice, combination = None, None
         if reason == "length":
             truncated += 1
-            error = "生成达到上限，动作未生效；请精简说明并输出完整协议行。"
+            error = "LENGTH:生成达到上限，动作未生效；请精简说明并输出完整协议行。"
+            rejected_action = "响应被截断，未采纳其中的动作。"
         elif reason not in ("stop", None):
             print(render(spectator_view(state, reply=reply, attempt=attempt)))
             raise RuntimeError(f"API 未正常完成生成：{reason}")
@@ -137,11 +170,10 @@ def _decide(state: State, agent: Agent, records: Path) -> tuple[int | Action, Co
                     combination = judge(choice, state.hands[state.actor], state.target)
                 return choice, combination, reply, attempt
             except RuleError as rejected:
-                error = str(rejected)
-        state.history.append({"phase": context["phase"], "turn": state.turn,
-                              "player": state.actor, "attempt": attempt, "accepted": False,
-                              "action": asdict(choice) if isinstance(choice, Action) else None,
-                              "error": error})
+                error = f"{rejected.code}:{rejected.message}"
+                rejected_action = (reply["text"].strip().splitlines()[-1] if choice is not None else
+                                   "未能解析出唯一合法格式的动作。")
+        correction = f"你刚才提交的动作：{rejected_action}\n被拒绝的原因：{error}"
         print(render(spectator_view(state, reply=reply, attempt=attempt, event=f"无效，未生效：{error}")), end="\n\n")
         if reason == "length" and truncated > agent.config["retries"]:
             raise RuntimeError("生成截断重试已耗尽；请检查 max_tokens 与模型的生成限制。")
@@ -152,8 +184,6 @@ def bid(state: State, agents: dict[str, Agent], records: Path) -> bool:
         state.actor = name
         score, _, reply, attempt = _decide(state, agents[name], records)
         state.bids[name] = score
-        state.history.append({"phase": "bid", "player": name, "bid": score,
-                              "attempt": attempt, "accepted": True})
         print(render(spectator_view(state, reply=reply, attempt=attempt, event=f"{name} 叫分 {score}，有效。")), end="\n\n")
     landlord = max(PLAYERS, key=state.bids.__getitem__)
     if state.bids[landlord] == 0:
@@ -162,7 +192,6 @@ def bid(state: State, agents: dict[str, Agent], records: Path) -> bool:
         return False
     state.landlord = state.actor = landlord
     state.hands[landlord].update(state.bottom)
-    state.history.append({"phase": "play", "event": "landlord", "player": landlord, "bottom": state.bottom})
     print(render(spectator_view(state, event=f"{landlord} 成为地主，领取公开底牌并首先领出。")))
     print("--------------------------")
     return True
@@ -182,10 +211,9 @@ def apply(state: State, action: Action, combination: Combo | None) -> None:
 def turn(state: State, agents: dict[str, Agent], records: Path) -> bool:
     action, combination, reply, attempt = _decide(state, agents[state.actor], records)
     apply(state, action, combination)
-    state.history.append({"phase": "play", "turn": state.turn, "player": state.actor,
-                          "attempt": attempt, "action": asdict(action), "accepted": True})
     finished = not state.hands[state.actor]
-    played = f"打出 {' '.join(action.cards)}" if action.kind == "play" else "不出"
+    played = f"打出：{' '.join(action.cards)}" if action.kind == "play" else "不出"
+    state.history.append(f"{PLAYER_IDS[state.actor]} {played}")
     event = f"{state.actor} {played}。裁判：合法，已生效。"
     if action.kind == "pass" and state.target is None:
         event += " 连续两次不出，下一位重新领出。"
@@ -215,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         rng, number = random.Random(args.seed), 0
         while True:
             number += 1
-            state = deal(agents, rng, number)
+            state = deal(rng, number)
             records = run_dir / f"deal-{number}"
             records.mkdir()
             if bid(state, agents, records):

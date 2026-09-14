@@ -18,7 +18,7 @@ def render(view: dict) -> str:
 
     可选：phase、deal、turn（从 1 起）、attempt、roles、target（Combo）、owner、
     bottom（Cards）、reply（Reply）、event（主程序给出的事件文字）、winner（获胜阵营文字）。
-    该快照包含私有手牌和模型说明，不能作为 Agent 的 table。
+    该快照包含所有私有手牌和模型说明，不能作为 Agent 的 user_prompt。
     """
     actor = view["actor"]
     index = PLAYERS.index(actor)

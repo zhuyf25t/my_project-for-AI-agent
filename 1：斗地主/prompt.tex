@@ -1,0 +1,141 @@
+% Compile twice with XeLaTeX. Exactly one A4 landscape page.
+% Revision 07: documented interfaces and request/message boundaries.
+% User example: complete first five plays from the earlier recorded game.
+\documentclass[10pt]{article}
+\usepackage[a4paper,landscape,margin=10mm]{geometry}
+\usepackage{lmodern}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc}
+\IfFontExistsTF{Microsoft YaHei}{
+  \setCJKmainfont{Microsoft YaHei}
+  \setCJKsansfont{Microsoft YaHei}
+  \setCJKmonofont{Microsoft YaHei}
+}{
+  \setCJKmainfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKsansfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKmonofont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+}
+\setmainfont{TeX Gyre Heros}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\definecolor{ink}{HTML}{172C3B}
+\definecolor{muted}{HTML}{526574}
+\definecolor{line}{HTML}{CBD6DC}
+\definecolor{blue}{HTML}{176C99}
+\definecolor{green}{HTML}{157967}
+\definecolor{bluebg}{HTML}{F0F7FC}
+\definecolor{greenbg}{HTML}{F0F8F5}
+\definecolor{graybg}{HTML}{F5F7FA}
+\newcommand{\code}[1]{{\ttfamily\detokenize{#1}}}
+\newcommand{\hint}[1]{{\color{muted}#1}}
+\begin{document}
+\sffamily\color{ink}
+\null
+\begin{tikzpicture}[
+  remember picture,overlay,shift={(current page.north west)},x=1mm,y=-1mm,
+  every node/.style={inner sep=0pt,outer sep=0pt},
+  copy/.style={anchor=north west,align=left,font=\fontsize{9}{12.5}\selectfont},
+  small/.style={anchor=north west,align=left,font=\fontsize{8}{11}\selectfont},
+  heading/.style={anchor=north west,align=left,font=\bfseries\fontsize{12}{15}\selectfont},
+  arrow/.style={-{Stealth[length=1.7mm,width=1.2mm]},line width=.65pt,draw=blue},
+  flowbox/.style={draw=line,fill=graybg,rounded corners=1.5mm,
+    minimum height=9mm,align=center,font=\fontsize{9}{11}\selectfont}
+]
+\node[anchor=north west,font=\fontsize{20}{24}\selectfont\bfseries] at (10,9)
+  {斗地主\quad Prompt 结构};
+\node[copy,text=muted] at (10,20)
+  {一次请求 = 一个固定 system + 一个重新生成的 user。完整历史保留，当前局面直接说明。};
+\node[anchor=north east,text=muted,font=\fontsize{9}{11}\selectfont] at (287,11)
+  {REVISION 07\quad /\quad 当前实现};
+\draw[line] (10,27) -- (287,27);
+
+\node[flowbox,minimum width=47mm] (state) at (33.5,38) {main：真实牌局状态};
+\node[flowbox,minimum width=57mm] (messages) at (104.5,38) {\code{format_user} → 两条消息};
+\node[flowbox,minimum width=45mm] (model) at (173.5,38) {Agent：请求 → 回复};
+\node[flowbox,minimum width=73mm] (judge) at (250.5,38) {judge：校验 → main 执行 / 纠正};
+\draw[arrow] (state.east) -- (messages.west);
+\draw[arrow] (messages.east) -- (model.west);
+\draw[arrow] (model.east) -- (judge.west);
+\node[small,text=muted] at (10,46)
+  {仅合法动作追加到历史。无效尝试不扣牌、不换人；下一次只附最近一次纠正。};
+
+% Fixed system responsibilities; complete game rules live in bot.py.
+\draw[draw=blue!30,fill=bluebg,rounded corners=2mm] (10,55) rectangle (92,123);
+\node[heading,text=blue] at (15,60) {system\quad 固定说明};
+\node[copy,text width=72mm] at (15,71) {
+  {\bfseries 身份与完整规则}\par
+  A/B/C 对应 Alice/Bob/Corleone；固定座次。叫分、胜负、全部合法牌型、大小比较与领出规则。\par
+  \vspace{2mm}
+  {\bfseries 如何读记录}\par
+  手牌按牌面用 | 分组，可拆牌或跨组组合。历史逐行记有效动作：\code{B} 打出：3 3，或 \code{C} 不出，保留整局。\par
+  \vspace{2mm}
+  {\bfseries 如何作答}\par
+  以当前局面为准，只用自己的手牌。可先解释一句，末行只写一个函数，不加前缀或代码围栏。
+};
+
+\draw[draw=line,fill=graybg,rounded corners=2mm] (10,129) rectangle (92,195);
+\node[heading] at (15,134) {关键边界};
+\node[copy,text width=72mm] at (15,143) {
+  {\bfseries 目标由 main 提供}\par
+  一人不出：目标仍有效。两人连续不出：目标清空，原出牌者自由出牌，不能 \code{pass()}。地主首出也无目标。\par
+  \vspace{1mm}
+  {\bfseries 叫分阶段}\par
+  只给已知叫分和本人手牌；未叫者写“尚未叫分”。不公开底牌，不预设地主。末行三选一：\code{bid(0)} / \code{bid(1)} / \code{bid(2)}。\par
+  \vspace{1mm}
+  {\bfseries 缓存顺序}\par
+  固定信息 → 追加历史 → 动态局面。历史原行不改；时间只存本地。命中以 API 的 \code{usage} 为准。
+};
+
+% Ordered user structure and a complete, short example, without hidden history.
+\draw[draw=green!30,fill=greenbg,rounded corners=2mm] (99,55) rectangle (287,195);
+\node[heading,text=green] at (104,60) {user\quad 由上到下：稳定信息 → 完整历史 → 本轮决定};
+\node[small,text=green] at (104,67) {以下示例已完成 5 个动作，记录全部列出；纠正区仅在失败后出现。};
+
+\node[copy,text width=178mm] at (104,74) {
+  {\bfseries 1. 本局公开信息}\quad 底牌：4 2 7\quad 叫分结果：A=2，B=0，C=0\quad 地主：A
+};
+\draw[green!20] (104,82) -- (282,82);
+\node[copy,text width=178mm] at (104,85) {
+  {\bfseries 2. 完整出牌记录}\par
+  A 打出：3 3 3 4 4\par
+  B 打出：10 10 K K K\par
+  C 不出\par
+  A 不出\par
+  B 打出：4 5 6 7 8 9
+};
+\draw[green!20] (104,113) -- (282,113);
+\node[copy,text width=178mm] at (104,116) {
+  {\bfseries 3. 当前局面}\par
+  阶段：出牌\quad 现在轮到你：C，身份：农民\par
+  你的当前手牌：3 | 4 | 6 6 | 7 | 8 8 | 9 9 | 10 | J | Q Q Q | K | A | X\par
+  各家剩余张数：A=15，B=6，C=17\par
+  本轮方式：跟牌\par
+  当前需要压制的牌：B 的顺子 4 5 6 7 8 9，共 6 张\par
+  当前状态说明：已有 0 人连续不出，目标仍然有效；可以合法压制，也可以 \code{pass()}。
+};
+\draw[green!20] (104,148) -- (282,148);
+\node[copy,text width=178mm] at (104,151) {
+  {\bfseries 4. 本次纠正（可选）}\par
+  你刚才提交的动作：实际被拒绝的函数；无法解析时明确说明。\par
+  被拒绝的原因：最近一次错误码及具体原因。旧解释与思考内容不回传。
+};
+\draw[green!20] (104,169) -- (282,169);
+\node[copy,text width=178mm] at (104,172) {
+  {\bfseries 5. 本次输出要求}\par
+  提交前核对持牌数量、牌型和压制关系，无需输出检查过程。\par
+  最后一行只写 \code{play(...)} 或 \code{pass()}。
+};
+\node[small,text=muted,text width=178mm] at (104,185) {
+  公开信息中，叫分先于持续增长的历史；当前身份、手牌和纠正靠后。\par
+  自由出牌时，当前局面区明确写“当前需要压制的牌：无”，并说明必须出牌。
+};
+
+\node[small,text=muted] at (10,199) {
+  接口：\code{format_user(state, player, correction="")} → \code{Agent.reply(user_prompt)}。完整规则见 bot.py；\code{stream=false}，配置参数与消息分开。
+};
+\end{tikzpicture}
+\end{document}
