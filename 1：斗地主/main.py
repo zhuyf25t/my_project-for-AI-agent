@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from time import perf_counter
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -138,22 +139,29 @@ def spectator_view(state: State, **event) -> dict:
     }
 
 
-def _decide(state: State, agent: Agent, records: Path) -> tuple[int | Action, Combo | None, Reply, int]:
-    """叫分与出牌共用纠正循环；成功返回决策、牌型、可见回复和尝试次数。"""
+def _decide(
+    state: State, agent: Agent, records: Path, *, detail: bool = False
+) -> tuple[int | Action, Combo | None, Reply, float]:
+    """纠正循环；返回决策、牌型、回复与本次调用耗时。"""
     bidding = state.landlord is None
     slot = PLAYERS.index(state.actor) + 1 if bidding else (state.turn - 1) % 3 + 1
     round_no = (state.turn - 1) // 3 + 1
     filename = f"record-bid-{slot}.jsonl" if bidding else f"record-{round_no}-{slot}.jsonl"
     attempt, truncated = 0, 0
     correction = ""
+    print(render(spectator_view(state)), flush=True)
     while True:
         attempt += 1
+        if attempt > 1:
+            print(render({"kind": "notice", "event": f"{state.actor} 重试 {attempt} / 等待响应…"}), flush=True)
         context = {"deal": state.deal, "phase": "bid" if bidding else "play",
                    "round": None if bidding else round_no, "slot": slot,
                    "player": state.actor, "decision_attempt": attempt}
         agent.on_request = partial(record_request, records / filename, context)
-        print(render(spectator_view(state, attempt=attempt)))
-        reply = agent.reply(format_user(state, state.actor, correction))
+        user_prompt = format_user(state, state.actor, correction)
+        started = perf_counter()
+        reply = agent.reply(user_prompt)
+        elapsed = perf_counter() - started
         reason = reply["finish_reason"]
         choice, combination = None, None
         if reason == "length":
@@ -161,38 +169,45 @@ def _decide(state: State, agent: Agent, records: Path) -> tuple[int | Action, Co
             error = "LENGTH:生成达到上限，动作未生效；请精简说明并输出完整协议行。"
             rejected_action = "响应被截断，未采纳其中的动作。"
         elif reason not in ("stop", None):
-            print(render(spectator_view(state, reply=reply, attempt=attempt)))
+            print(render({"kind": "notice", "event": "[未生效] 响应未正常结束。", "error": True,
+                          "reply": reply, "elapsed": elapsed, "detail": detail}))
             raise RuntimeError(f"API 未正常完成生成：{reason}")
         else:
             try:
                 choice = parse_bid(reply["text"]) if bidding else parse_action(reply["text"])
                 if not bidding:
                     combination = judge(choice, state.hands[state.actor], state.target)
-                return choice, combination, reply, attempt
+                return choice, combination, reply, elapsed
             except RuleError as rejected:
                 error = f"{rejected.code}:{rejected.message}"
                 rejected_action = (reply["text"].strip().splitlines()[-1] if choice is not None else
                                    "未能解析出唯一合法格式的动作。")
         correction = f"你刚才提交的动作：{rejected_action}\n被拒绝的原因：{error}"
-        print(render(spectator_view(state, reply=reply, attempt=attempt, event=f"无效，未生效：{error}")), end="\n\n")
+        print(render({"kind": "notice", "event": f"[未生效] {rejected_action}\n原因：{error}",
+                      "error": True, "reply": reply, "elapsed": elapsed, "detail": detail}), end="\n\n")
         if reason == "length" and truncated > agent.config["retries"]:
             raise RuntimeError("生成截断重试已耗尽；请检查 max_tokens 与模型的生成限制。")
 
 
-def bid(state: State, agents: dict[str, Agent], records: Path) -> bool:
+def bid(state: State, agents: dict[str, Agent], records: Path, *, detail: bool = False) -> bool:
     for name in PLAYERS:
         state.actor = name
-        score, _, reply, attempt = _decide(state, agents[name], records)
+        score, _, reply, elapsed = _decide(state, agents[name], records, detail=detail)
         state.bids[name] = score
-        print(render(spectator_view(state, reply=reply, attempt=attempt, event=f"{name} 叫分 {score}，有效。")), end="\n\n")
+        next_actor = PLAYERS[PLAYERS.index(name) + 1] if name != PLAYERS[-1] else None
+        print(render(spectator_view(state, kind="result", bid=score, reply=reply, elapsed=elapsed,
+                                   detail=detail, next_actor=next_actor)), end="\n\n")
     landlord = max(PLAYERS, key=state.bids.__getitem__)
     if state.bids[landlord] == 0:
-        print("三人都不叫，重新洗牌发牌。")
+        print(render({"kind": "notice", "event": "三人都不叫，重新洗牌发牌。"}))
         print("--------------------------")
         return False
     state.landlord = state.actor = landlord
     state.hands[landlord].update(state.bottom)
-    print(render(spectator_view(state, event=f"{landlord} 成为地主，领取公开底牌并首先领出。")))
+    scores = " / ".join(f"{PLAYER_IDS[name]}={state.bids[name]}" for name in PLAYERS)
+    print(render({"kind": "notice", "event":
+                  f"{landlord} 成为地主，领取底牌并首先领出。\n"
+                  f"底牌：{' '.join(state.bottom)}    叫分：{scores}"}))
     print("--------------------------")
     return True
 
@@ -208,23 +223,24 @@ def apply(state: State, action: Action, combination: Combo | None) -> None:
             state.target, state.owner, state.passes = None, None, 0
 
 
-def turn(state: State, agents: dict[str, Agent], records: Path) -> bool:
-    action, combination, reply, attempt = _decide(state, agents[state.actor], records)
+def turn(state: State, agents: dict[str, Agent], records: Path, *, detail: bool = False) -> bool:
+    before = sum(state.hands[state.actor].values())
+    action, combination, reply, elapsed = _decide(state, agents[state.actor], records, detail=detail)
     apply(state, action, combination)
     finished = not state.hands[state.actor]
     played = f"打出：{' '.join(action.cards)}" if action.kind == "play" else "不出"
     state.history.append(f"{PLAYER_IDS[state.actor]} {played}")
-    event = f"{state.actor} {played}。裁判：合法，已生效。"
-    if action.kind == "pass" and state.target is None:
-        event += " 连续两次不出，下一位重新领出。"
     winner = ""
     if finished:
         winner = f"地主 {state.landlord}" if state.actor == state.landlord else "农民（" + "、".join(
             name for name in PLAYERS if name != state.landlord) + "）"
-    print(render(spectator_view(state, reply=reply, attempt=attempt, event=event, winner=winner)))
+    next_actor = None if finished else PLAYERS[(PLAYERS.index(state.actor) + 1) % 3]
+    print(render(spectator_view(state, kind="result", action=action, before=before,
+                               reply=reply, elapsed=elapsed, detail=detail,
+                               next_actor=next_actor, winner=winner)))
     print("--------------------------" if state.turn % 3 == 0 or finished else "")
     if not finished:
-        state.actor = PLAYERS[(PLAYERS.index(state.actor) + 1) % 3]
+        state.actor = next_actor
         state.turn += 1
     return finished
 
@@ -234,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", help="指定 .env；默认从脚本位置向上查找")
     parser.add_argument("--seed", type=int, help="固定洗牌种子")
     parser.add_argument("--records-dir", type=Path, default=BASE / "records", help="请求记录根目录")
+    parser.add_argument("--detail", action="store_true", help="额外显示完整模型回复与原始用量")
     args = parser.parse_args(argv)
     try:
         agents = {name: Agent(name, config) for name, config in load_configs(args.env_file).items()}
@@ -246,16 +263,17 @@ def main(argv: list[str] | None = None) -> int:
             state = deal(rng, number)
             records = run_dir / f"deal-{number}"
             records.mkdir()
-            if bid(state, agents, records):
+            if bid(state, agents, records, detail=args.detail):
                 break
-        while not turn(state, agents, records):
+        while not turn(state, agents, records, detail=args.detail):
             pass
         return 0
     except KeyboardInterrupt:
-        print("\n用户中止，停止后续请求。")
+        print(render({"kind": "notice", "event": "\n用户中止，停止后续请求。"}))
         return 130
     except (ValueError, RuntimeError, OSError) as error:
-        print(f"运行中止：{error}（不因运行故障判定玩家输牌）")
+        print(render({"kind": "notice", "error": True,
+                      "event": f"运行中止：{error}（不因运行故障判定玩家输牌）"}))
         return 1
 
 
