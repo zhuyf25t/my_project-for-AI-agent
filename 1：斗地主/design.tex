@@ -1,0 +1,145 @@
+% Compile twice with XeLaTeX: xelatex -interaction=nonstopmode -halt-on-error design.tex
+% Revision 02. One A4 landscape page. Responsive terminal proposal; Python is not changed.
+% Cards and token counts in the main mockup match the supplied screenshot.
+% 12.4 s is illustrative; elapsed time needs new local measurement.
+\documentclass[10pt]{article}
+\usepackage[a4paper,landscape,margin=10mm]{geometry}
+\usepackage{lmodern}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc}
+\IfFontExistsTF{Microsoft YaHei}{
+  \setCJKmainfont{Microsoft YaHei}
+  \setCJKsansfont{Microsoft YaHei}
+  \setCJKmonofont{Microsoft YaHei}
+}{
+  \setCJKmainfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKsansfont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+  \setCJKmonofont{FandolHei-Regular}[BoldFont=FandolHei-Bold]
+}
+\setmainfont{TeX Gyre Heros}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\definecolor{ink}{HTML}{182A2A}
+\definecolor{muted}{HTML}{586B6A}
+\definecolor{paper}{HTML}{FAFAF5}
+\definecolor{line}{HTML}{DCE4DE}
+\definecolor{accent}{HTML}{217560}
+\definecolor{term}{HTML}{182427}
+\definecolor{panel}{HTML}{243438}
+\definecolor{active}{HTML}{2E4741}
+\definecolor{bright}{HTML}{F2F5ED}
+\definecolor{soft}{HTML}{BCCBC7}
+\definecolor{mint}{HTML}{BCE5BC}
+\definecolor{amber}{HTML}{F2CF8E}
+\newcommand{\code}[1]{{\ttfamily\detokenize{#1}}}
+\begin{document}
+\sffamily\color{ink}\null
+\begin{tikzpicture}[
+  remember picture,overlay,shift={(current page.north west)},x=1mm,y=-1mm,
+  every node/.style={inner sep=0pt,outer sep=0pt},
+  copy/.style={anchor=north west,align=left,font=\fontsize{9}{13}\selectfont},
+  small/.style={anchor=north west,align=left,font=\fontsize{8}{11.5}\selectfont},
+  head/.style={anchor=north west,align=left,font=\bfseries\fontsize{12}{15}\selectfont},
+  termtext/.style={anchor=north west,align=left,text=bright,font=\fontsize{10}{14}\selectfont},
+  cards/.style={termtext,font=\ttfamily\bfseries\fontsize{12}{16}\selectfont}
+]
+\fill[paper] (0,0) rectangle (297,210);
+\node[anchor=north west,font=\bfseries\fontsize{23}{28}\selectfont] at (10,8)
+  {一眼看懂这一手};
+\node[copy,text=muted] at (10,21)
+  {斗地主终端 / 先看牌桌，再看行动，最后看统计。};
+\node[small,text=muted,anchor=north east] at (287,11) {DESIGN 02\quad /\quad A4 横向一页};
+\node[small,text=muted,anchor=north east] at (287,21) {三席并排 · 当前席高亮 · 结果独立成块};
+
+% Wide terminal mockup: three stable seats, one current target, one result.
+% Panel padding and bold/color emphasis translate to terminal cells and ANSI.
+\fill[term,rounded corners=2mm] (10,33) rectangle (212,171);
+\node[small,text=soft] at (18,39) {第 01 局\quad /\quad 第 11 轮\quad /\quad 第 2 位};
+\node[small,text=soft,anchor=north east] at (204,39) {观战席 · 全手牌可见};
+\node[termtext,font=\bfseries\fontsize{16}{20}\selectfont] at (18,48)
+  {轮到 Bob};
+\node[termtext,text=mint,anchor=north east] at (204,50)
+  {B 农民\quad ·\quad 跟牌};
+\node[termtext,text=soft,font=\fontsize{10}{14}\selectfont] at (18,59)
+  {当前目标\quad A / Alice 的对子\quad {\color{bright}\code{8 8}}};
+
+% A and C keep a quiet treatment; B receives both a word marker and emphasis.
+\fill[panel] (18,70) rectangle (77,108);
+\fill[active] (81,70) rectangle (141,108);
+\fill[mint] (81,70) rectangle (141,71);
+\fill[panel] (145,70) rectangle (204,108);
+\node[termtext,font=\bfseries\fontsize{11}{15}\selectfont] at (22,74) {A / Alice};
+\node[termtext,text=mint,font=\bfseries\fontsize{11}{15}\selectfont] at (85,74) {> B / Bob};
+\node[termtext,font=\bfseries\fontsize{11}{15}\selectfont] at (149,74) {C / Corleone};
+\node[small,text=soft] at (22,82) {地主};
+\node[small,text=amber,anchor=north east] at (73,82) {仅剩 3 张};
+\node[small,text=mint] at (85,82) {农民 · 当前};
+\node[small,text=bright,anchor=north east] at (137,82) {9 张};
+\node[small,text=soft] at (149,82) {农民};
+\node[small,text=bright,anchor=north east] at (200,82) {6 张};
+\node[cards] at (22,91) {K\quad 2 2};
+\node[cards] at (85,91) {3 3\quad 4\quad 7 7};
+\node[cards] at (85,100) {10 10\quad J J};
+\node[cards] at (149,91) {5 5\quad 8\quad 9};
+\node[cards] at (149,100) {Q\quad A};
+\node[small,text=soft] at (18,111) {以上为行动前手牌\quad /\quad 等待 Bob 响应…};
+
+% The response is appended below the immutable pre-action snapshot.
+\draw[soft!25!term] (18,119) -- (204,119);
+\node[termtext,text=mint,font=\bfseries\fontsize{14}{18}\selectfont] at (18,124)
+  {Bob 出\quad \code{10 10}\quad [已生效]};
+\node[termtext,font=\fontsize{11}{15}\selectfont,anchor=north east] at (204,126)
+  {9 → 7 张};
+\node[termtext,text=soft] at (18,137)
+  {新目标：Bob 的对子 \code{10 10}};
+\node[termtext,text=bright,anchor=north east] at (204,137)
+  {下一位：Corleone};
+\node[small,text=soft] at (18,151)
+  {调用 12.4 s\quad ·\quad 输入 1,097\quad ·\quad 输出 9,734（含推理 9,727）};
+\node[small,text=soft] at (18,158)
+  {缓存命中 768 / 1,097 = 70.0\%\quad ·\quad 正常结束};
+\node[small,text=muted,text width=202mm] at (10,174)
+  {示例沿用截图牌面与用量，12.4 s 为示意。开局摘要单独显示姓名、底牌与叫分；有可见说明时追加在结果下方。};
+
+% Short notes, each linked to a visible design decision rather than long prose.
+\node[head,text=accent] at (222,35) {01\quad 看谁在行动};
+\node[copy,text width=65mm] at (222,44) {
+  三席固定 A / B / C。\par
+  当前席用底色、\code{>} 和“当前”标出；剩余不超过 3 张写“仅剩”。
+};
+\draw[line] (222,65) -- (287,65);
+\node[head,text=accent] at (222,70) {02\quad 看得清手牌};
+\node[copy,text width=65mm] at (222,79) {
+  同牌面靠拢，组间留白。\par
+  逐张写牌，不改成数量缩写。长手牌自动换行，三个区随内容等高。
+};
+\draw[line] (222,100) -- (287,100);
+\node[head,text=accent] at (222,105) {03\quad 看懂发生了什么};
+\node[copy,text width=65mm] at (222,114) {
+  结果说清动作、是否生效、剩余变化及下一位。\par
+  牌桌只展示一次，重试追加原因；不重复整张牌桌。
+};
+\draw[line] (222,135) -- (287,135);
+\node[head,text=accent] at (222,140) {04\quad 细节放低一层};
+\node[copy,text width=65mm] at (222,149) {
+  说明原文折行，空说明省略。\par
+  统计置底；原始回复与用量字典仅在详细模式显示。
+};
+
+% A compact specification strip preserves edge cases and feasibility.
+\draw[line] (10,187) -- (287,187);
+\node[small,text width=98mm] at (10,191) {
+  \textbf{窗口适配}\quad ≥110 列三席并排；更窄按 A/B/C 纵排。按字符宽度换行；终端统一字号，用间距、粗体和颜色区分。
+};
+\node[small,text width=88mm] at (113,191) {
+  \textbf{状态变化}\quad 不出保留目标；两人不出写“自由领出”。拒绝写动作、原因与重试号；胜方单独成行，中止不判输。
+};
+\node[small,text width=81mm] at (206,191) {
+  \textbf{输出节奏}\quad 每人空行、每轮横线，自动继续。main 决定时机，display 排版；耗时含调用重试，缺失统计写“未提供”。
+};
+\end{tikzpicture}
+\end{document}
