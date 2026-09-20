@@ -324,3 +324,151 @@ API 密钥和 Authorization 等凭据不得写入提示词、日志或源码。�
 - 在配置有效、接口可用且银行家给出合法响应的条件下，人类能仅通过菜单从开局玩到完整结算，无须修改代码或手动修补状态。
 
 以上验收以首版“人类选手＋AI 银行家”的可运行单局为限。银行家模式、AI 对局观战和图形界面留待人类审核后另行定义，不因本文件描述了完整设想而自动纳入本次实现。
+
+### LangGraph 设计结构（AI）
+
+本节把前面的规则落实为状态、节点和边的设计草案，仍未开始实现游戏。配套图为 [LangGraph 设计结构图（横向 A4，单页）](output/pdf/langgraph-design.pdf)，版本 `DESIGN 01`；图与以下节点名称一一对应。图中的 `P`、`S` 是避免交叉线的同名连接标记，分别指向 `await_player`、`settle`，不是额外节点。
+
+#### 17. 设计总览：一个状态，九个节点
+
+使用一个 `StateGraph(GameState)`，按顺序执行节点，不引入并行分支、子图或多 Agent 调度。银行家在“正常报价”“提前来电判断”“还价答复”三种上下文中复用同一个调用节点；人类在初选、开箱和报价决定三个阶段复用同一个暂停节点。
+
+可以将三个概念理解为：状态保存“这一局现在是什么样”；节点完成“一次输入、一次请求或一次规则处理”；边根据已经得到的结果决定“下一步去哪里”。节点返回状态更新，条件边只读状态，不调用模型、不改变规则数据。该用法对应 [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api) 的状态、节点及条件边机制。
+
+| 类型 | 节点 |
+| --- | --- |
+| 本地初始化 | `init_game` |
+| 人类输入与本地执行 | `await_player`、`apply_player` |
+| AI 请求、校验与本地执行 | `bank_decide`、`validate_bank`、`apply_bank` |
+| 完成结算与复盘 | `settle`、`review` |
+| 可恢复的调用故障 | `await_recovery` |
+
+`START`、`END` 是 LangGraph 的入口和终止标记，不计入九个业务节点。只有 `bank_decide` 调用模型；`await_player` 和 `await_recovery` 使用 `interrupt()`；其他节点都是本地确定性逻辑。
+
+#### 18. State：字段、更新方式与可见范围
+
+`GameState` 建议用 `TypedDict` 定义，内部记录使用可序列化的字典和列表。类型定义约束开发时的结构；实际动作、字段类型与状态不变量仍须由运行时校验，不能把 `TypedDict` 当作自动裁判。
+
+| 字段 | 建议类型与初值 | 含义及允许的写入方 |
+| --- | --- | --- |
+| `game_id`、`rule_version`、`rules` | `str`、`str`、规则快照 | `init_game` 写入后不变；快照含奖金表、轮次配额、系数和来电上限 |
+| `box_values` | `dict[int, int]` | 私有箱号金额映射，只由 `init_game` 生成；后续不可修改 |
+| `own_box` | `int 或 None`，初始 `None` | `apply_player` 在初选合法后写入，之后不变 |
+| `opened` | `list[OpenedBox]`，初始空列表 | 已开箱的顺序记录；每项包含箱号、金额和事件 ID，由 `apply_player` 追加 |
+| `round_no`、`opened_in_round` | `int`，初始 `1`、`0` | 轮次与本轮已开数；仅 `apply_player` 在合法开箱或拒绝正常报价进入下一轮时更新 |
+| `early_used`、`early_used_this_round` | `int`、`bool`，初始 `0`、`False` | `apply_bank` 发布提前报价时更新；只有进入下一轮才由 `apply_player` 重置轮内标记 |
+| `phase` | 阶段枚举，初始 `CHOOSE` | 见下表；只有本地状态节点改变业务阶段 |
+| `current_offer` | `Offer 或 None`，初始 `None` | 当前有效报价，由 `apply_bank` 发布；`apply_player` 拒绝时清空，`settle` 完成结算后清空 |
+| `counter_amount` | `int 或 None`，初始 `None` | `apply_player` 提交合法还价时写入；答复处理后清空；`Offer.counter_used` 保留使用痕迹 |
+| `pending_player` | `ActionEnvelope 或 None` | `await_player` 收到的恢复值，只是待验证输入；`apply_player` 使用后清空 |
+| `bank_task` | `NORMAL / EARLY / COUNTER 或 None` | `apply_player` 根据当前动作与资格设定，`apply_bank` 完成决策后清空 |
+| `bank_draft`、`bank_action` | `Candidate 或 None`、`ValidatedAction 或 None` | `bank_decide` 写候选及校验元数据；`validate_bank` 写合法动作；`apply_bank` 消费并清空 |
+| `generation_attempt`、`feedback` | `int`、`Feedback 或 None` | 生成次数与最近输入/调用错误；反馈标注来源和错误码，成功处理后清除，不是游戏事件 |
+| `history`、`version` | `list[Event]`、`int`，初始空列表、`0` | 本地状态节点提交有效事件时同时更新；失败、看分析和保存退出不推进版本 |
+| `settlement` | `SettlementIntent 或 None` | `apply_player` 或 `apply_bank` 设置待结算原因及成交金额；箱值结算由 `settle` 读取真值 |
+| `result`、`review_data` | 结果字典、复盘字典，初始 `None` | 分别仅由 `settle`、`review` 写入 |
+
+几个复合记录的边界如下：
+
+- `Offer` 至少包含 `offer_id`、`kind`（`NORMAL / EARLY`）、轮次、实际金额、档位、系数、报价时的统计依据、简短理由与 `counter_used`。这些内容在报价发布时固定，不能随之后的状态重新计算而覆盖历史。
+- `ActionEnvelope` 包含 `request_id`、`expected_version` 和具体动作。暂停问题的请求标识由局 ID、状态版本及阶段稳定生成；恢复时检验其与当前问题是否对应。用户输入错误可以继续使用同一个未完成请求，不生成假事件。
+- `Candidate` 包含可见文本、生成结束原因、本次 `bank_task` 和请求绑定的状态版本；截断响应即使看似完整也不执行。`ValidatedAction` 保留经过校验的动作和绑定版本，执行前再次确认其未过期；模型不能自行指定或覆盖该版本。
+- `Event` 包含唯一事件 ID、递增版本、行动者、动作和已提交结果；报价还需保存当时的公开局面快照。可以用局 ID 加新版本构成事件 ID，已有相同 ID 的记录不能再次追加。
+- `SettlementIntent` 的原因仅为 `DEAL / COUNTER_DEAL / OWN_BOX`；`result` 保存最终金额、原因、原始箱值与最终揭晓。模型不得直接填写 `result`。
+- API 客户端、密钥、数据库连接与文件句柄放在图外运行上下文，不放入可持久化的 `GameState`；检查点也不是配置密钥的存储位置。
+
+业务阶段与图节点位置分开表达：
+
+| `phase` | 当前允许发生的业务 |
+| --- | --- |
+| `CHOOSE` | 等待选手确定自己的箱子 |
+| `OPEN` | 等待开箱，或处理本次开箱之后的银行家介入判断 |
+| `OFFER` | 有有效报价，等待选手接受、拒绝或还价 |
+| `COUNTER` | 合法还价已提交，等待银行家答复；原报价仍保存但暂不接受新的玩家动作 |
+| `SETTLE` | 原因已经确定，等待本地结算 |
+| `DONE` | 结果已经确定，只生成或查看复盘 |
+
+`phase` 不负责记录“模型请求到一半”等运行位置，这部分由 LangGraph 检查点的待执行节点和中断信息承担。调用失败不把 `phase` 改成结束状态。
+
+所有字段先使用默认的覆盖更新方式，不使用 `MessagesState`，也不为 `history` 配置无条件的 `operator.add` 追加。节点以新列表返回 `history = [*旧历史, 新事件]`，并返回相关字段的同一份更新；不原地修改传入的字典或列表。首版是串行图，无须引入并行合并的 reducer；未来若并行才重新设计冲突和去重语义。
+
+未开箱集合、剩余金额、剩余配额、统计量和候选报价是**派生视图**，按本次状态即时计算，不维护另一套可独立修改的值。`public_view(state)` 专门生成玩家界面和银行家提示词允许使用的字段；禁止输出完整状态。即使字段名带 `private`，检查点、调试流或 `stream_mode="values"` 也不会自动替应用保密，终端与 API 必须使用白名单投影。
+
+每次有效提交后检查：原始映射仍有 20 个不同箱号；开箱记录无重复且不含自己的箱子；轮内开箱数在配额内；未开箱数等于 `20 - len(opened)`；提前次数不超限；`OFFER / COUNTER` 必须有有效报价；`DONE` 必须有结果。
+
+#### 19. Nodes：每个节点只负责一个边界
+
+| 节点 | 读取与执行 | 返回的更新及后续 |
+| --- | --- | --- |
+| `init_game` | 只在新局创建规则快照、均匀随机映射和初始字段 | 完整初始状态；进入 `await_player`。恢复不经过此节点；意外拿已有局再次初始化应拒绝 |
+| `await_player` | 根据 `phase` 生成公开菜单和稳定的请求标识，调用一次 `interrupt(payload)` | 人类恢复后仅返回 `pending_player`，不校验成交、不打开箱子、不请求 AI |
+| `apply_player` | 校验请求版本、阶段和动作；执行合法初选、开箱、拒绝、还价或成交意向 | 一次返回权威状态更新、有效事件及下一阶段；错误仅写反馈并回到 `await_player` |
+| `bank_decide` | 按 `bank_task` 构造公开提示词，发起一次完整生成；内部执行有限 HTTP 重试 | 候选文本与生成计数，交给 `validate_bank`；调用失败耗尽则写错误并转 `await_recovery` |
+| `validate_bank` | 解析 JSON，检查字段、阶段、可选动作、档位、理由长度及候选绑定版本 | 合法则写 `bank_action`；可纠正则写反馈并返回 `bank_decide`；生成次数耗尽则转 `await_recovery` |
+| `apply_bank` | 只接收已验证动作；计算并发布报价，或提交 `wait`、保留原价、接受还价 | 更新报价、提前额度、阶段及有效历史；清空本次银行家临时字段；回到玩家或进入结算 |
+| `settle` | 按 `settlement` 取成交金额，或读取自己的真实箱值；检查尚未结算 | 一次写入 `result`、最终事件和 `phase=DONE`，关闭报价，然后进入 `review` |
+| `review` | 从已提交事件与结果生成数值复盘、揭晓信息及稳定的结果视图，不调用模型 | 写 `review_data` 后到 `END`；重复生成应得到相同复盘数据 |
+| `await_recovery` | 展示脱敏故障，使用独立的 `interrupt()` 等待“显式重试”；也允许界面保存退出 | 重试仅清理本决策的错误与计数，保留 `bank_task` 和全部游戏事实，回到 `bank_decide` |
+
+每次建立一个新的 `bank_task` 时，将 `generation_attempt` 设为 0 并清空旧候选；每次完整生成尝试加 1。格式纠正沿用同一任务和局面，最多三次生成；一个完整生成中的 HTTP 重试不额外消耗游戏机会。用户在故障菜单明确选择重试，才开启新的有限尝试周期，程序不能自行无限重置计数。
+
+合法还价在 `apply_player` 中就将 `current_offer.counter_used=True`、`counter_amount` 写入并设 `phase=COUNTER`。之后即使银行家接口失败，这次已提交还价也继续存在，不能恢复成“可以再还价”；失败的模型响应只是不再额外消耗机会。`keep_offer` 清空待处理还价、恢复 `OFFER`，保留已用还价标记；`accept_counter` 保存成交意向后进入 `SETTLE`。
+
+#### 20. Edges：固定连线和条件分支
+
+固定边只用于下一步唯一的情况；有多种结果的源节点只注册条件边，不能再额外挂一条无条件边，否则可能同时执行多个后继。
+
+| 起点 | 条件或事件 | 终点 |
+| --- | --- | --- |
+| `START` | 新局启动 | `init_game` |
+| `init_game` | 初始化完成 | `await_player` |
+| `await_player` | 收到恢复值 | `apply_player` |
+| `apply_player` | 初选完成、输入错误、无需银行家介入的开箱、拒绝报价后继续开箱 | `await_player` |
+| `apply_player` | 轮末正常报价、符合提前来电条件，或合法还价 | `bank_decide` |
+| `apply_player` | `deal()`，或最终轮 `no_deal()` | `settle` |
+| `bank_decide` | 得到可见候选文本，含需进一步判定的空白或截断结果 | `validate_bank` |
+| `bank_decide` | 不可恢复配置错误或有限网络尝试耗尽 | `await_recovery` |
+| `validate_bank` | 合法动作 | `apply_bank` |
+| `validate_bank` | 非法候选且 `generation_attempt < 3` | `bank_decide` |
+| `validate_bank` | 非法候选且已用完生成次数 | `await_recovery` |
+| `apply_bank` | 正常/提前 `offer`、提前判断 `wait`、还价答复 `keep_offer` | `await_player` |
+| `apply_bank` | 还价答复 `accept_counter` | `settle` |
+| `settle` | 结果已经提交 | `review` |
+| `review` | 复盘完成 | `END` |
+| `await_recovery` | 用户明确要求重试同一银行家决策 | `bank_decide` |
+
+`apply_player` 之后的路由遵循以下优先级；所有字段由该节点完成校验和提交后再读取：
+
+1. 当前输入非法，回到 `await_player`，不执行其他分支。
+2. 已形成结算意向，进入 `settle`。
+3. 合法还价已提交，设置 `bank_task=COUNTER` 并进入 `bank_decide`。
+4. 刚合法打开一个箱子：本轮配额已满时设置 `NORMAL`；否则仅在 `early_used < 2` 且本轮未提前来电时设置 `EARLY`；两者均不满足就继续等待开箱。
+5. 其他合法动作回到 `await_player`。拒绝提前报价后不能针对同一个开箱事件再次触发来电；必须等下一个合法开箱才重新检查。
+
+拒绝正常报价且轮次小于 6 时，`apply_player` 将 `round_no` 加 1、`opened_in_round` 清零、轮内提前标记清零，清空报价并回到 `OPEN`；拒绝提前报价仅清空报价并回到 `OPEN`，不改配额；第六轮拒绝设置 `settlement=OWN_BOX`。
+
+银行家 `wait` 只结束这一次决策并回到 `OPEN`，不能立即再次走回 `bank_decide`。银行家发布报价则进入 `OFFER`；轮次未结束的提前报价只能在 `apply_bank` 真正发布时增加来电次数。
+
+路由函数可以命名为 `route_player`、`route_bank_call`、`route_validation`、`route_bank_commit`，分别挂在四个有分支的节点后。函数返回上表中的目标名称，每次选择一个后继；路由函数本身不是图节点，也不重复校验或应用动作。
+
+#### 21. 暂停、恢复与图外界面
+
+`await_player` 的中断值只包含公开问题、可选动作和请求标识；通过同一 `thread_id` 的 `Command(resume=输入封装)` 继续。中断恢复会重新执行所在节点，因此中断前只生成确定性的展示数据；不能在那里随机洗箱、请求模型、写交易或增加计数。框架的中断不能被通用异常处理吞掉。[LangGraph 中断文档](https://docs.langchain.com/oss/python/langgraph/interrupts)
+
+菜单中的 `explain()` 和 `save_exit()` 由终端控制器在图已经暂停时直接处理。前者读取当前检查点的公开投影并展示统计，后者保留当前暂停点并退出进程；两者都不发送 `Command(resume=...)`，所以不会消费当前问题、推进版本或形成“从 END 恢复”的伪流程。这是第 8 节用户操作到图执行的映射，不新增游戏动作。
+
+`await_recovery` 是专门等待用户处理调用故障的操作节点，不能接受 `deal`、开箱或还价。用户可以修正图外 API 配置后重试原任务，也可以保存退出；原有报价和待处理还价始终保留。状态损坏、数据库写入失败等程序问题停止在最后一致检查点，不伪装成可重试的银行家决策错误。
+
+新局用新的 `thread_id` 和初始化输入启动；已经在 `interrupt()` 处暂停的局使用同一 ID 加恢复值；进程在普通节点间中止、已有可继续任务而没有待答中断时，用同一 ID 从检查点继续，不再次传入新局数据。是否有中断或待执行节点由保存的检查点决定，不能只看 `phase` 推测。[LangGraph 持久化文档](https://docs.langchain.com/oss/python/langgraph/persistence)
+
+同一局只允许一个本地执行者，不支持两个进程同时恢复。状态版本和请求标识用于拒绝旧输入；节点返回更新后由检查点提交，不在提交前向用户宣布动作已生效。对外事件导出按事件 ID 幂等写入，避免崩溃重跑重复日志；外部模型仍可能被再次请求，不能据此声称整个系统实现了外部调用的“恰好一次”。
+
+`review → END` 是正常完成的唯一出口；保存退出留在原中断点，银行家故障留在恢复中断点，二者均没有正常终局边。图的执行步数上限只作为发现意外循环的保护，达到时报告未完成，不把它当作第七轮、默认成交或胜负条件。
+
+#### 22. 用三条路径核对设计
+
+- **一次提前来电**：`await_player → apply_player（开箱）→ bank_decide（EARLY）→ validate_bank → apply_bank（offer）→ await_player`。玩家拒绝后，经 `apply_player` 回到开箱等待，本轮剩余配额保持不变。
+- **还价被接受**：`await_player → apply_player（counter）→ bank_decide（COUNTER）→ validate_bank → apply_bank（accept_counter）→ settle → review → END`。成交金额来自已经校验的还价，银行家没有再生成金额的权限。
+- **正常报价连续格式错误**：`bank_decide → validate_bank → bank_decide` 有限纠正，耗尽后到 `await_recovery`。本轮已开的箱子不会重开，尚未发布的报价不会显示为生效，只有用户明确重试才返回请求节点。
+
+后续实现时，应将第 16 节的业务验收与这些图路径一起验证；本次交付只增加设计说明和配套 PDF，不新增游戏代码或更改依赖。
