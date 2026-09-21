@@ -3,6 +3,7 @@
 *.env
 env
 .venv/
+.venv-*/
 __pycache__/
 *.py[cod]
 
@@ -25,3 +26,6 @@ tests/
 # API 请求记录只保留在本地
 /1：斗地主/records/
 record-*.jsonl
+
+# Deal or No Deal 的本地运行记录
+/2：Deal or No Deal/records/
