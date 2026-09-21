@@ -1,14 +1,21 @@
 .env
 .env.*
+*.env
+env
 .venv/
+.venv-*/
 __pycache__/
 *.py[cod]
+
+# 本地资料与生成目录不提交
+100084
+100084.*
+output/
 
 tests/
 .pytest_cache/
 
 # 斗地主架构图的重复输出与编译中间文件
-/1：斗地主/output/
 /1：斗地主/tmp/
 /1：斗地主/*.aux
 /1：斗地主/*.log
@@ -19,3 +26,6 @@ tests/
 # API 请求记录只保留在本地
 /1：斗地主/records/
 record-*.jsonl
+
+# Deal or No Deal 的本地运行记录
+/2：Deal or No Deal/records/
