@@ -1,4 +1,4 @@
-"""两个角色共享 API 适配器，但提示词和消息历史独立。也提供离线演示。"""
+"""两个角色共享真实模型 API 适配器，但提示词和消息历史独立。"""
 
 import json
 import math
@@ -9,7 +9,6 @@ from http.client import HTTPConnection, HTTPException, HTTPSConnection
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, AnyMessage
@@ -169,29 +168,3 @@ class ChatAgent:
                 raise failure
             time.sleep(2 ** attempt)
         raise AssertionError("unreachable")
-
-
-class DemoAgent:
-    """固定策略模拟器，不是 LLM；读取与真实模型完全相同的公开输入。"""
-
-    def invoke(self, messages: list[AnyMessage], tools: list[dict]) -> AIMessage:
-        view = json.loads(messages[-1].content)
-        phase = view["phase"]
-        args = {}
-        if phase == "choose":
-            name, args = "choose_box", {"box_id": 1}
-        elif phase == "open":
-            name, args = "open_box", {"box_id": view["openable_boxes"][0]}
-        elif phase in ("bank_early", "bank_normal"):
-            name, args = "offer", {"level": "base"}
-        elif phase == "counter":
-            name = "accept_counter" if view["round_no"] == 6 else "keep_offer"
-        elif "counter" in view["legal_actions"]:
-            name = "counter"
-            args = {"amount": min(view["analysis"]["max"], view["offer"]["amount"] + 1)}
-        else:
-            name = "no_deal"
-        args["reason"] = "离线固定策略演示：展示提前来电、还价和轮次推进。"
-        return AIMessage(content="", tool_calls=[{
-            "id": f"demo_{uuid4().hex}", "name": name, "args": args,
-        }])

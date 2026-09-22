@@ -5,11 +5,12 @@ import random
 import unittest
 from copy import deepcopy
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import convert_to_openai_messages
 
-from bot import AgentError, ChatAgent, DemoAgent, ModelConfig, load_configs, parse_reply
+from bot import AgentError, ChatAgent, ModelConfig, load_configs, parse_reply
 from game import RuleError, actor_for, analysis, apply_action, legal_actions, make_offer, public_view, remaining, tool_schemas
 from main import RECURSION_LIMIT, build_graph
 from state import PRIZES, ROUND_QUOTAS, initial_state
@@ -188,7 +189,33 @@ class RulesTests(unittest.TestCase):
                 self.fail(f"seed {seed} 未在有限动作数内结算")
 
 
-class RecordingDemo(DemoAgent):
+class ScriptedAgent:
+    """仅用于测试的固定响应桩，不参与 main.py 的实际对局。"""
+
+    def invoke(self, messages, tools):
+        view = json.loads(messages[-1].content)
+        phase = view["phase"]
+        args = {}
+        if phase == "choose":
+            name, args = "choose_box", {"box_id": 1}
+        elif phase == "open":
+            name, args = "open_box", {"box_id": view["openable_boxes"][0]}
+        elif phase in ("bank_early", "bank_normal"):
+            name, args = "offer", {"level": "base"}
+        elif phase == "counter":
+            name = "accept_counter" if view["round_no"] == 6 else "keep_offer"
+        elif "counter" in view["legal_actions"]:
+            name = "counter"
+            args = {"amount": min(view["analysis"]["max"], view["offer"]["amount"] + 1)}
+        else:
+            name = "no_deal"
+        args["reason"] = "测试固定响应：覆盖提前来电、还价和轮次推进。"
+        return AIMessage(content="", tool_calls=[{
+            "id": f"test_{uuid4().hex}", "name": name, "args": args,
+        }])
+
+
+class RecordingAgent(ScriptedAgent):
     def __init__(self, actor):
         self.actor, self.requests = actor, []
 
@@ -199,7 +226,7 @@ class RecordingDemo(DemoAgent):
         return response
 
 
-class DeclineAgent(DemoAgent):
+class DeclineAgent(ScriptedAgent):
     def invoke(self, messages, tools):
         response = super().invoke(messages, tools)
         phase = json.loads(messages[-1].content)["phase"]
@@ -210,7 +237,7 @@ class DeclineAgent(DemoAgent):
 
 class GraphTests(unittest.TestCase):
     def run_graph(self, player=None, banker=None, **options):
-        graph = build_graph({"player": player or DemoAgent(), "banker": banker or DemoAgent()}, **options)
+        graph = build_graph({"player": player or ScriptedAgent(), "banker": banker or ScriptedAgent()}, **options)
         return graph.invoke(initial_state(7), {"recursion_limit": RECURSION_LIMIT})
 
     def assert_history_paired(self, history):
@@ -221,8 +248,8 @@ class GraphTests(unittest.TestCase):
             if isinstance(message, ToolMessage):
                 self.assertIsInstance(history[index - 1], AIMessage)
 
-    def test_three_node_graph_completes_full_demo(self):
-        graph = build_graph({"player": DemoAgent(), "banker": DemoAgent()})
+    def test_three_node_graph_completes_full_game(self):
+        graph = build_graph({"player": ScriptedAgent(), "banker": ScriptedAgent()})
         self.assertEqual(set(graph.get_graph().nodes), {"__start__", "__end__", "player", "banker", "execute"})
         state = graph.invoke(initial_state(7), {"recursion_limit": RECURSION_LIMIT})
         self.assertEqual(state["status"], "completed")
@@ -239,7 +266,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual([e["round_no"] for e in state["game"]["events"] if e["action"] == "offer"], [1, 2, 3, 4, 5, 6])
 
     def test_messages_are_paired_and_private_histories_are_separate(self):
-        player, banker = RecordingDemo("player"), RecordingDemo("banker")
+        player, banker = RecordingAgent("player"), RecordingAgent("banker")
         state = self.run_graph(player, banker)
         for actor, agent, opponent in (("player", player, "banker"), ("banker", banker, "player")):
             self.assert_history_paired(state[f"{actor}_messages"])
@@ -252,12 +279,12 @@ class GraphTests(unittest.TestCase):
                 self.assertNotIn('"boxes"', json.dumps(view))
 
     def test_rule_error_corrects_without_losing_tool_pairing(self):
-        demo = DemoAgent()
+        scripted = ScriptedAgent()
         calls = 0
         def invoke(messages, tools):
             nonlocal calls
             calls += 1
-            reply = demo.invoke(messages, tools)
+            reply = scripted.invoke(messages, tools)
             if calls <= 2:
                 reply.tool_calls[0]["args"]["box_id"] = 100
             return reply
@@ -271,7 +298,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(failures), 2)
 
     def test_empty_multiple_truncated_or_invalid_calls_stop_after_three(self):
-        valid = DemoAgent().invoke([HumanMessage(content=json.dumps(public_view(initial_state()["game"])))], [])
+        valid = ScriptedAgent().invoke([HumanMessage(content=json.dumps(public_view(initial_state()["game"])))], [])
         replies = [AIMessage(content="我想选 1 号箱"),
                    AIMessage(content="", tool_calls=valid.tool_calls * 2),
                    AIMessage(content="", tool_calls=valid.tool_calls, response_metadata={"finish_reason": "length"}),
@@ -285,9 +312,9 @@ class GraphTests(unittest.TestCase):
                 self.assertFalse(any(isinstance(m, AIMessage) for m in state["player_messages"]))
 
     def test_repeated_tool_id_does_not_execute_again(self):
-        demo = DemoAgent()
+        scripted = ScriptedAgent()
         def invoke(messages, tools):
-            reply = demo.invoke(messages, tools)
+            reply = scripted.invoke(messages, tools)
             reply.tool_calls[0]["id"] = "reused"
             return reply
         state = self.run_graph(Mock(invoke=invoke))

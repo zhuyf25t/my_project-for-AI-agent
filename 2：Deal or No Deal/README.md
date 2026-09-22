@@ -22,22 +22,14 @@ python -m pip install -r requirements.txt
 
 如果已有的 `.venv` 来自 WSL，请在 WSL 中使用；Windows 可以另建 `.venv-windows`。两者都被 Git 忽略。
 
-先看不需要密钥的离线演示：
-
-```sh
-python main.py --demo --seed 7
-```
-
-`--demo` 是固定策略模拟器，**不是大模型**。它走同一张 LangGraph 图，用同一套公开输入、工具动作和规则，方便先观察节点流转。这个种子下会运行 50 次 Agent 决策，以 49,876 虚拟币还价成交。
-
-接真实模型后运行：
+按下一节配置真实模型后运行：
 
 ```sh
 python main.py
 python main.py --record
 ```
 
-每次启动都是新的一局，不需要终端菜单操作。`--record` 会把公开事件与结算写入本地 `records/`，该目录不提交 Git；这份记录不具备继续游戏功能。默认只打印，不写记录。
+两个角色均使用 `ChatAgent` 调用真实模型。每次启动都是新的一局，不需要终端菜单操作。`--record` 会把公开事件与结算写入本地 `records/`，该目录不提交 Git；这份记录不具备继续游戏功能。默认只打印，不写记录。
 
 其他选项：
 
@@ -87,7 +79,7 @@ stream=false
 | --- | --- | --- |
 | `state.py` | 类型、规则常量、初始化并洗牌 | `GameData` 和 `GameState` 的区别 |
 | `game.py` | 公开视图、工具定义、统计、校验和执行 | `public_view()`、`apply_action()` |
-| `bot.py` | 两个角色的提示词、API 适配器、离线 Agent | 模型只接收公开视图与自己的消息历史 |
+| `bot.py` | 两个角色的提示词、真实模型 API 适配器 | 模型只接收公开视图与自己的消息历史 |
 | `main.py` | 三节点、路由、CLI、可选本地记录 | `build_graph()`、`execute_node()` |
 | `display.py` | 逐步事件、报价分析和结算 | 展示不维护另一份游戏状态 |
 | `test_game.py` | 规则、实际图运行、消息协议与模拟 HTTP 测试 | 直接运行，无额外测试框架依赖 |
@@ -244,10 +236,9 @@ offer = max(min(remaining_amounts), raw_amount)
 
 ```sh
 python -m unittest -v
-python main.py --demo --seed 7 --quiet
 ```
 
-测试包含规则边界、100 局随机合法动作的不变量检查、完整六轮图执行、拒绝最后报价后的结算、非法响应纠正、消息配对、两份历史隔离、隐藏信息投影，以及模拟 HTTP 重试与配置覆盖。测试不读取真实 `.env`，也不调用付费模型；真实供应商连通性需要使用自己的兼容接口运行验证。
+测试包含规则边界、100 局随机合法动作的不变量检查、完整六轮图执行、拒绝最后报价后的结算、非法响应纠正、消息配对、两份历史隔离、隐藏信息投影，以及模拟 HTTP 重试与配置覆盖。固定响应桩仅定义在 `test_game.py` 中，不参与实际对局。测试不读取真实 `.env`，也不调用付费模型；真实供应商连通性需要使用自己的兼容接口运行验证。
 
 可优先 review：`apply_action()` 是否严格执行规则，`public_view()` 是否只暴露公开信息，`execute_node()` 是否正确写入配对反馈，以及条件边是否总能结束。
 
