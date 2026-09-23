@@ -10,7 +10,7 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
-from bot import Agent, AgentError, ChatAgent, DemoAgent, SYSTEM_PROMPTS, load_configs
+from bot import Agent, AgentError, ChatAgent, SYSTEM_PROMPTS, load_configs
 from display import show_event, show_result
 from game import RuleError, actor_for, apply_action, public_view, tool_schemas
 from state import Actor, GameState, initial_state
@@ -119,7 +119,6 @@ def save_record(state: GameState) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="围观两个 AI 玩 Deal or No Deal；终端无需人工操作。")
-    parser.add_argument("--demo", action="store_true", help="固定策略离线演示，不调用 API")
     parser.add_argument("--seed", type=int, help="仅供本地调试的洗牌种子，不发送给模型")
     parser.add_argument("--env-file", help="指定配置文件；默认使用项目目录的 .env")
     parser.add_argument("--max-model-calls", type=int, default=200, help="本局 Agent 调用上限（1..200）")
@@ -127,10 +126,9 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true", help="只显示最终结果")
     args = parser.parse_args()
     try:
-        agents = ({"player": DemoAgent(), "banker": DemoAgent()} if args.demo else
-                  {role: ChatAgent(config) for role, config in load_configs(args.env_file).items()})
+        agents = {role: ChatAgent(config) for role, config in load_configs(args.env_file).items()}
         graph = build_graph(agents, None if args.quiet else show_event, args.max_model_calls)
-        print("Deal or No Deal | " + ("离线固定策略演示（非 LLM）" if args.demo else "双 AI 自动对局"))
+        print("Deal or No Deal | 双 AI 自动对局")
         print("* 表示选手保留箱。分析中的概率假设拒绝所有后续报价并持箱到最后。", flush=True)
         state = graph.invoke(initial_state(args.seed), {"recursion_limit": RECURSION_LIMIT})
         show_result(state)
