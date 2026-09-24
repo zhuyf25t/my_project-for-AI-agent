@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.graph import END, START, StateGraph
 
 from bot import Agent, AgentError, ChatAgent, SYSTEM_PROMPTS, load_configs
-from display import show_event, show_result
+from display import SpectatorDisplay, show_result
 from game import RuleError, actor_for, apply_action, public_view, tool_schemas
 from state import Actor, GameState, initial_state
 
@@ -127,10 +127,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         agents = {role: ChatAgent(config) for role, config in load_configs(args.env_file).items()}
-        graph = build_graph(agents, None if args.quiet else show_event, args.max_model_calls)
-        print("Deal or No Deal | 双 AI 自动对局")
-        print("* 表示选手保留箱。分析中的概率假设拒绝所有后续报价并持箱到最后。", flush=True)
-        state = graph.invoke(initial_state(args.seed), {"recursion_limit": RECURSION_LIMIT})
+        state = initial_state(args.seed)
+        with SpectatorDisplay(state, enabled=not args.quiet) as display:
+            graph = build_graph(agents, None if args.quiet else display.update, args.max_model_calls)
+            state = graph.invoke(state, {"recursion_limit": RECURSION_LIMIT})
+            display.update(state, final=True)
         show_result(state)
         if args.record:
             print(f"本地记录：{save_record(state)}")
