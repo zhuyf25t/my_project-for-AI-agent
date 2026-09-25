@@ -88,7 +88,7 @@ def reason_panel(state: GameState, actor: str, console: Console, width: int) -> 
     return Panel(content, title=f"{NAMES[actor]} · 最近公开理由", border_style=COLORS[actor])
 
 
-def render_dashboard(state: GameState, console: Console) -> Group:
+def render_dashboard(state: GameState, console: Console, waiting: bool = False) -> Group:
     game = state["game"]
     wide = console.width >= 140
     middle_width = console.width - 78 if wide else console.width
@@ -96,8 +96,10 @@ def render_dashboard(state: GameState, console: Console) -> Group:
         status = "本局已结算"
     elif state["status"] == "error":
         status = "对局中止：" + safe_line(state["error"] or "未知错误")
+    elif waiting:
+        status = f"等待回车 · 下一步由{NAMES[state['actor']]}行动"
     else:
-        status = f"{NAMES[state['actor']]} 决策中 · 无需操作"
+        status = f"{NAMES[state['actor']]} 决策中"
     heading = Text(f"DEAL OR NO DEAL  |  {status}\n", style="bold cyan")
     heading.append(
         f"第 {game['round_no']}/6 轮   本轮 {game['opened_in_round']}/{ROUND_QUOTAS[game['round_no']-1]}"
@@ -154,17 +156,19 @@ def show_event(state: GameState, console: Console | None = None) -> None:
 
 
 class SpectatorDisplay:
-    """宽且足够高的终端固定刷新；小终端纵排，管道输出事件行。"""
+    """逐步观战时打印静态快照并等待回车；其余情况支持固定刷新。"""
 
-    def __init__(self, state: GameState, enabled: bool = True, console: Console | None = None):
+    def __init__(self, state: GameState, enabled: bool = True, console: Console | None = None,
+                 pause_after_action: bool = False):
         self.state, self.enabled = state, enabled
         self.console = console or Console()
+        self.pause_after_action = pause_after_action
         self.live = None
 
     def __enter__(self):
         if self.enabled and self.console.is_terminal:
             frame = render_dashboard(self.state, self.console)
-            if self._fits(frame):
+            if not self.pause_after_action and self._fits(frame):
                 self.live = Live(frame, console=self.console, refresh_per_second=2)
                 self.live.start()
             else:
@@ -177,10 +181,10 @@ class SpectatorDisplay:
 
     def update(self, state: GameState, final: bool = False) -> None:
         self.state = state
-        if not self.enabled:
-            return
-        if self.console.is_terminal:
-            frame = render_dashboard(state, self.console)
+        waiting = (self.pause_after_action and not final and state["status"] == "running"
+                   and bool(state["game"]["events"]))
+        if self.enabled and self.console.is_terminal:
+            frame = render_dashboard(state, self.console, waiting=waiting)
             if self.live and not self._fits(frame):
                 self.live.stop()
                 self.live = None
@@ -188,8 +192,15 @@ class SpectatorDisplay:
                 self.live.update(frame, refresh=True)
             elif not final:
                 self.console.print(frame)
-        elif not final and state["game"]["events"]:
+        elif self.enabled and not final and state["game"]["events"]:
             show_event(state, self.console)
+        if waiting:
+            # 同步阻塞 execute 的事件回调，回车前不会发起下一次模型请求。
+            # 不根据 is_terminal 跳过暂停；stdin 关闭时让主程序明确中止。
+            number = state["game"]["events"][-1]["number"]
+            self.console.input(f"第 {number} 次行动已完成。按回车继续下一回合"
+                               f"（{NAMES[state['actor']]}）；Ctrl+C 退出：")
+            self.console.print(Text(f"已继续，等待{NAMES[state['actor']]}决策……", style="dim"))
 
     def __exit__(self, exc_type, exc, traceback):
         if self.live:

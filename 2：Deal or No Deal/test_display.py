@@ -1,11 +1,15 @@
 """显示边界测试，不调用模型。"""
 import unittest
+from contextlib import redirect_stdout
 from copy import deepcopy
 from io import StringIO
+from unittest.mock import patch
 from rich.console import Console
 from display import SpectatorDisplay, prize_table, render_dashboard
 from game import actor_for, apply_action
+from main import main
 from state import initial_state
+from test_game import RecordingAgent
 
 
 def sample():
@@ -71,6 +75,66 @@ class DisplayTests(unittest.TestCase):
         with SpectatorDisplay(sample(), enabled=False, console=console) as display:
             display.update(sample())
         self.assertEqual(output.getvalue(), "")
+
+    def test_terminal_waits_below_static_dashboard(self):
+        output = StringIO()
+        console = Console(file=output, width=160, height=60, force_terminal=True,
+                          legacy_windows=False, color_system=None)
+        with patch("display.Live") as live, patch("builtins.input", return_value="") as read:
+            with SpectatorDisplay(initial_state(), console=console, pause_after_action=True) as display:
+                display.update(sample())
+                display.update(sample(), final=True)
+        live.assert_not_called()
+        read.assert_called_once_with()
+        text = output.getvalue()
+        self.assertIn("等待回车", text)
+        self.assertGreater(text.index("按回车继续下一回合"), text.rindex("最近三步"))
+
+    def test_cli_waits_after_each_action_before_next_model_call(self):
+        for quiet in (False, True):
+            with self.subTest(quiet=quiet):
+                output = StringIO()
+                console = Console(file=output, force_terminal=False, width=160)
+                agents = {role: RecordingAgent(role) for role in ("player", "banker")}
+                snapshots = []
+
+                def read():
+                    calls = sum(len(agent.requests) for agent in agents.values())
+                    # 第 N 次回车之前，只能有 N 次模型调用，下一回合不能提前运行。
+                    self.assertEqual(calls, len(snapshots) + 1)
+                    self.assertIn(f"第 {calls} 次行动已完成", output.getvalue())
+                    if not quiet:
+                        self.assertEqual(output.getvalue().count("公开理由："), calls)
+                    snapshots.append(calls)
+                    return ""
+
+                args = ["main.py", "--seed", "7"] + (["--quiet"] if quiet else [])
+                with patch("main.load_configs", return_value=agents), \
+                     patch("main.ChatAgent", side_effect=lambda agent: agent), \
+                     patch("display.Console", return_value=console), \
+                     patch("sys.argv", args), patch("builtins.input", side_effect=read), \
+                     redirect_stdout(StringIO()) as result:
+                    code = main()
+                self.assertEqual(code, 0)
+                self.assertEqual(snapshots, list(range(1, 50)))
+                self.assertEqual(sum(len(a.requests) for a in agents.values()), 50)
+                self.assertIn("49,876", result.getvalue())
+
+    def test_closed_input_or_interrupt_never_advances_to_next_action(self):
+        for failure, expected in ((EOFError, 1), (KeyboardInterrupt, 130)):
+            with self.subTest(failure=failure):
+                agents = {role: RecordingAgent(role) for role in ("player", "banker")}
+                console = Console(file=StringIO(), force_terminal=False)
+                with patch("main.load_configs", return_value=agents), \
+                     patch("main.ChatAgent", side_effect=lambda agent: agent), \
+                     patch("display.Console", return_value=console), \
+                     patch("sys.argv", ["main.py"]), \
+                     patch("builtins.input", side_effect=failure), redirect_stdout(StringIO()) as result:
+                    code = main()
+                self.assertEqual(code, expected)
+                self.assertEqual(len(agents["player"].requests), 1)
+                self.assertEqual(len(agents["banker"].requests), 0)
+                self.assertNotIn("最终揭晓", result.getvalue())
 
 
 if __name__ == "__main__":
