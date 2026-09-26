@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.graph import END, START, StateGraph
 
 from bot import Agent, AgentError, ChatAgent, SYSTEM_PROMPTS, load_configs
-from display import show_event, show_result
+from display import SpectatorDisplay, show_result
 from game import RuleError, actor_for, apply_action, public_view, tool_schemas
 from state import Actor, GameState, initial_state
 
@@ -118,25 +118,29 @@ def save_record(state: GameState) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="围观两个 AI 玩 Deal or No Deal；终端无需人工操作。")
+    parser = argparse.ArgumentParser(description="围观两个 AI 玩 Deal or No Deal；每次行动后按回车继续。")
     parser.add_argument("--seed", type=int, help="仅供本地调试的洗牌种子，不发送给模型")
     parser.add_argument("--env-file", help="指定配置文件；默认使用项目目录的 .env")
     parser.add_argument("--max-model-calls", type=int, default=200, help="本局 Agent 调用上限（1..200）")
     parser.add_argument("--record", action="store_true", help="在已忽略的 records/ 保存公开事件和结算")
-    parser.add_argument("--quiet", action="store_true", help="只显示最终结果")
+    parser.add_argument("--quiet", action="store_true", help="隐藏逐步局面，仍逐次按回车；最后显示结果")
     args = parser.parse_args()
     try:
         agents = {role: ChatAgent(config) for role, config in load_configs(args.env_file).items()}
-        graph = build_graph(agents, None if args.quiet else show_event, args.max_model_calls)
-        print("Deal or No Deal | 双 AI 自动对局")
-        print("* 表示选手保留箱。分析中的概率假设拒绝所有后续报价并持箱到最后。", flush=True)
-        state = graph.invoke(initial_state(args.seed), {"recursion_limit": RECURSION_LIMIT})
+        state = initial_state(args.seed)
+        with SpectatorDisplay(state, enabled=not args.quiet, pause_after_action=True) as display:
+            graph = build_graph(agents, display.update, args.max_model_calls)
+            state = graph.invoke(state, {"recursion_limit": RECURSION_LIMIT})
+            display.update(state, final=True)
         show_result(state)
         if args.record:
             print(f"本地记录：{save_record(state)}")
         return 0 if state["status"] == "completed" else 1
     except (ValueError, OSError) as error:
         print(f"启动或记录失败：{error}")
+        return 1
+    except EOFError:
+        print("\n输入已关闭，无法等待回车；对局已中止，未进行结算。请在可输入的终端中运行。")
         return 1
     except KeyboardInterrupt:
         print("\n用户中止运行；未完成对局不结算，本版本不提供恢复。")
